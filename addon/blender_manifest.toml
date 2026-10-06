@@ -1,0 +1,19 @@
+schema_version = "1.0.0"
+
+id = "nodelizer_bridge"
+version = "1.0.0"
+name = "Nodelizer Bridge"
+tagline = "Edit Nodelizer models in Blender and send them back"
+maintainer = "Diego Machado"
+type = "add-on"
+website = "https://github.com/diegohmac/nodelizer-blender-bridge"
+tags = ["Import-Export"]
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2026 Diego Machado"]
+
+[permissions]
+files = "Read the model Nodelizer prepared and write the edited model back to the same folder"
+network = "Talk to Nodelizer on this computer only (127.0.0.1)"
