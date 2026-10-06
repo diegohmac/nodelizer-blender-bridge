@@ -14,7 +14,12 @@ import uuid
 # The add-on's package imports bpy; these tests only need its pure Python modules.
 _bpy = types.ModuleType("bpy")
 _bpy.types = types.SimpleNamespace(Operator=object, Panel=object)
-_bpy.app = types.SimpleNamespace(background=True, timers=None, version_string="test")
+_bpy.app = types.SimpleNamespace(
+    background=True,
+    timers=None,
+    version_string="test",
+    handlers=types.SimpleNamespace(persistent=lambda function: function, save_post=[]),
+)
 sys.modules.setdefault("bpy", _bpy)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -30,13 +35,16 @@ def make_session(root, **overrides):
     os.makedirs(folder)
     blend = os.path.join(root, "project", "blender", "node.blend")
     data = {
-        "schema": 1,
+        "schema": 2,
         "sessionId": session_id,
         "projectName": "Knight",
-        "assetName": "Hero",
+        "nodeName": "Hero scene",
         "format": "glb",
-        "source": "source.glb",
         "blend": blend,
+        "imports": [
+            {"input": "node-1", "name": "Hero", "file": "input-1.glb"},
+            {"input": "node-2", "name": "Sword", "file": "input-2.fbx"},
+        ],
     }
     data.update(overrides)
     with open(os.path.join(folder, "session.json"), "w", encoding="utf-8") as handle:
@@ -53,7 +61,20 @@ class SessionTests(unittest.TestCase):
         session = sessions.load(folder)
         self.assertEqual(session.session_id, session_id)
         self.assertEqual(session.result_path(), os.path.join(folder, "result.glb"))
-        self.assertEqual(session.source_path, os.path.join(folder, "source.glb"))
+        self.assertEqual(session.node_name, "Hero scene")
+        self.assertEqual([i.input for i in session.imports], ["node-1", "node-2"])
+        self.assertEqual(
+            session.import_path(session.imports[1]), os.path.join(folder, "input-2.fbx")
+        )
+
+    def test_takes_a_scene_with_nothing_to_import(self):
+        folder, _ = make_session(self.root, imports=[])
+        self.assertEqual(sessions.load(folder).imports, ())
+
+    def test_refuses_an_older_schema(self):
+        folder, _ = make_session(self.root, schema=1)
+        with self.assertRaises(sessions.SessionError):
+            sessions.load(folder)
 
     def test_refuses_relative_and_odd_folders(self):
         with self.assertRaises(sessions.SessionError):
@@ -68,10 +89,18 @@ class SessionTests(unittest.TestCase):
         with self.assertRaises(sessions.SessionError):
             sessions.load(folder)
 
-    def test_refuses_source_names_that_leave_the_folder(self):
-        for source in ("../source.glb", "/etc/passwd", "source.blend", "source.glb/../x"):
-            folder, _ = make_session(self.root, source=source)
-            with self.assertRaises(sessions.SessionError, msg=source):
+    def test_refuses_import_files_that_leave_the_folder(self):
+        for file in ("../input-1.glb", "/etc/passwd", "input-1.blend", "input-1.glb/../x", "x.glb"):
+            imports = [{"input": "node-1", "name": "Hero", "file": file}]
+            folder, _ = make_session(self.root, imports=imports)
+            with self.assertRaises(sessions.SessionError, msg=file):
+                sessions.load(folder)
+
+    def test_refuses_odd_input_ids(self):
+        for input_id in ("", "../x", "a b", "x" * 200):
+            imports = [{"input": input_id, "name": "Hero", "file": "input-1.glb"}]
+            folder, _ = make_session(self.root, imports=imports)
+            with self.assertRaises(sessions.SessionError, msg=input_id):
                 sessions.load(folder)
 
     def test_refuses_a_blend_outside_a_blender_folder(self):
@@ -110,7 +139,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertIsNone(protocol.decode(b'{"type":"RUN","code":"x"}'))
         self.assertIsNone(protocol.decode(b"not json"))
         self.assertIsNone(protocol.decode(b"[1,2]"))
-        self.assertIsNone(protocol.decode(b'{"type":"WELCOME","protocol":2}'))
+        self.assertIsNone(protocol.decode(b'{"type":"WELCOME","protocol":9}'))
 
     def test_drops_extra_fields(self):
         message = protocol.decode(b'{"type":"EXPORT","format":"GLB","path":"/etc/passwd"}')
@@ -134,7 +163,7 @@ class ClientTests(unittest.TestCase):
             reader = connection.makefile("rb")
             received.append(json.loads(reader.readline()))
             connection.sendall(b'{"type":"PING"}\n')  # Before WELCOME: ignored.
-            connection.sendall(b'{"type":"WELCOME","protocol":1}\n{"type":"EXPORT","format":"GLB"}\n')
+            connection.sendall(b'{"type":"WELCOME","protocol":2}\n{"type":"EXPORT","format":"GLB"}\n')
             reader.readline()
             connection.close()
 

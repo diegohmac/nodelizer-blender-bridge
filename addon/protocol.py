@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 
-PROTOCOL = 1
+PROTOCOL = 2
 # A message is a short status line. Models travel as files, never over the socket.
 MAX_LINE_BYTES = 64 * 1024
 

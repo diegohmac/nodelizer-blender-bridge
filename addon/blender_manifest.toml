@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "nodelizer_bridge"
-version = "1.0.0"
+version = "2.0.0"
 name = "Nodelizer Bridge"
 tagline = "Edit Nodelizer models in Blender and send them back"
 maintainer = "Diego Machado"

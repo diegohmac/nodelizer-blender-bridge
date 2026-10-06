@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""`blender --command nodelizer_prepare <session folder>`: makes the session's first .blend.
+"""`blender --command nodelizer_prepare <session folder>`: makes or updates the session's .blend.
 
-The host runs this once, in the background, before opening Blender for a model that has no .blend
-yet. It imports the model into an empty scene and saves it where session.json says. It never
-writes over an existing .blend.
+The host runs this in the background before opening Blender. Without a .blend it starts an empty
+scene; with one it opens it. Then it brings in each model session.json lists under `imports`,
+each into its own collection, replacing the collection that model had before, and saves. The
+host keeps a copy of an existing .blend before asking for an update.
 
-Exit codes: 0 done, 2 bad session, 3 the .blend already exists, 4 import failed, 5 save failed.
+Exit codes: 0 done, 2 bad session, 4 import failed, 5 save failed.
 """
 
 from __future__ import annotations
@@ -30,14 +31,18 @@ def execute(argv) -> int:
     except sessions.SessionError as error:
         print(f"nodelizer_prepare: {error}", file=sys.stderr)
         return 2
-    if os.path.exists(session.blend):
-        print("nodelizer_prepare: the .blend already exists", file=sys.stderr)
-        return 3
-    if not os.path.isfile(session.source_path):
-        print("nodelizer_prepare: the source model is missing", file=sys.stderr)
-        return 4
+    existing = os.path.isfile(session.blend)
     try:
-        export.import_model(session.source_path, session.asset_name)
+        if existing:
+            bpy.ops.wm.open_mainfile(filepath=session.blend, load_ui=False)
+        else:
+            export.clear_default_scene()
+        for item in session.imports:
+            path = session.import_path(item)
+            if not os.path.isfile(path):
+                raise RuntimeError(f"{item.file} is missing")
+            export.replace_input(path, item.input, item.name)
+        export.finish_imports()
     except Exception as error:  # Importers raise all kinds of errors on broken files.
         print(f"nodelizer_prepare: import failed: {error}", file=sys.stderr)
         return 4

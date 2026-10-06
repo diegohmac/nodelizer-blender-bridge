@@ -24,6 +24,8 @@ class State:
     problem: str | None = None
     last_sent: str | None = None
     ready_sent = False
+    # Set while the bridge saves the file itself, so that save doesn't export twice.
+    saving = False
     tab_tries = TAB_TRIES
 
 
@@ -76,13 +78,38 @@ def start():
     sessions.heartbeat(state.session)
     bpy.app.timers.register(_poll, first_interval=POLL_SECONDS, persistent=True)
     bpy.app.timers.register(_beat, first_interval=HEARTBEAT_SECONDS, persistent=True)
+    if _saved not in bpy.app.handlers.save_post:
+        bpy.app.handlers.save_post.append(_saved)
     _show_sidebar()
     if state.session.frame and is_session_file():
         _frame_model()
     return None
 
 
+@bpy.app.handlers.persistent
+def _saved(_file, *_args):
+    """Saving the session's file (Ctrl+S) also updates its node in the host.
+
+    The export runs on the next tick, outside Blender's save, where operators are safe to call.
+    """
+    if state.saving or not is_session_file():
+        return
+    if not bpy.app.timers.is_registered(_sync_after_save):
+        bpy.app.timers.register(_sync_after_save, first_interval=0.01)
+
+
+def _sync_after_save():
+    from .operators import deliver
+
+    problem = deliver("sync", save=False)
+    if problem:
+        state.problem = problem
+    return None
+
+
 def stop():
+    if _saved in bpy.app.handlers.save_post:
+        bpy.app.handlers.save_post.remove(_saved)
     for timer in (_poll, _beat):
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)
@@ -191,8 +218,9 @@ def _show_tab():
 def _frame_model():
     """Fits a just-made file's model in view. A file opened again keeps its own view."""
     try:
-        collection = bpy.data.collections.get(state.session.asset_name[:63])
-        objects = list(collection.all_objects) if collection else []
+        from .export import tagged_collections
+
+        objects = [o for c in tagged_collections() for o in c.all_objects]
         if not objects:
             return
         for obj in bpy.context.view_layer.objects:

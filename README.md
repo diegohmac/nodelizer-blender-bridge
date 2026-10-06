@@ -10,22 +10,25 @@ It's free software under the GNU General Public License, version 3 or later. See
 ## How it works
 
 Nodelizer installs its own copy of Blender and this add-on. It doesn't touch any Blender you
-already have. When you choose **Edit in Blender** on a 3D model:
+already have. A **Blender node** in Nodelizer is a scene: the 3D models connected to it come into
+one `.blend`, each in its own collection. When you open it:
 
-1. Nodelizer writes a session folder with `session.json` and a copy of the model.
-2. If the model has no `.blend` yet, Nodelizer runs
-   `blender --background --command nodelizer_prepare <session folder>`, which imports the model
-   into an empty scene and saves the `.blend`.
+1. Nodelizer writes a session folder with `session.json` and copies of the models to bring in.
+2. It runs `blender --background --command nodelizer_prepare <session folder>`, which starts an
+   empty scene or opens the existing `.blend`, brings each listed model into its own collection
+   (replacing that model's earlier version, and nothing else), and saves.
 3. Nodelizer opens Blender on that `.blend`. The add-on finds the session from the
    `NODELIZER_BRIDGE_SESSION` environment variable and connects to Nodelizer on `127.0.0.1`.
-4. In the 3D view's sidebar, the **Nodelizer** tab shows the session and three buttons:
-   - **Send Back to Nodelizer** saves the `.blend`, exports the model (GLB, or FBX for quad
-     meshes), writes `result.json` and tells Nodelizer, which updates the model's node.
-   - **Sync** does the same without switching to Nodelizer.
-   - **Open Nodelizer** brings Nodelizer to the front.
+4. You edit as you normally would. The **Nodelizer** tab in the 3D view's sidebar shows the
+   session and:
+   - **Saving (Ctrl+S)** also exports the scene (GLB, or FBX when it holds an FBX model) and
+     updates the node in Nodelizer.
+   - **Send Back to Nodelizer** saves, updates the node, brings Nodelizer forward and closes
+     Blender.
+   - **Open Nodelizer** brings Nodelizer to the front and keeps Blender open.
 
-The `.blend` stays with the Nodelizer project, so editing the model in Blender again later picks up
-where you left off, with modifiers, rigs, materials and everything else Blender keeps.
+The `.blend` stays with the Nodelizer project, named after the node, so opening it again later
+picks up where you left off, with modifiers, rigs, materials and everything else Blender keeps.
 
 ## What it will and won't do
 
@@ -44,13 +47,13 @@ where you left off, with modifiers, rigs, materials and everything else Blender 
 addon/
   __init__.py            registers everything
   blender_manifest.toml  the extension manifest (Blender 4.2 and later)
-  operators.py           Send Back, Sync, Open Nodelizer
+  operators.py           Send Back, Open Nodelizer
   panel.py               the sidebar panel
   session.py             session.json, result.json and the heartbeat file
   ipc.py                 the socket to Nodelizer
   protocol.py            the messages, and the check that drops anything else
-  export.py              import into a new .blend, export GLB and FBX
-  prepare.py             the nodelizer_prepare command
+  export.py              bring models into collections, export GLB and FBX
+  prepare.py             the nodelizer_prepare command: make or update the scene
   runtime.py             the state of the bridge in this Blender
 scripts/build.py         builds the extension zip
 tests/                   tests that run without Blender

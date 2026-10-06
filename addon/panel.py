@@ -26,10 +26,10 @@ class NODELIZER_PT_bridge(bpy.types.Panel):
         column = layout.column(align=True)
         column.label(text=f"Connected: {'Yes' if connected else 'No'}")
         column.label(text=f"Project: {session.project_name}")
-        column.label(text=f"Asset: {session.asset_name}")
+        column.label(text=f"Node: {session.node_name}")
         column.label(text=f"Format: {session.format.upper()}")
         if state.last_sent:
-            column.label(text=f"Last sent at {state.last_sent}")
+            column.label(text=f"Nodelizer updated at {state.last_sent}")
         if state.problem:
             layout.label(text=state.problem, icon="ERROR")
         if not is_session_file():
@@ -39,10 +39,11 @@ class NODELIZER_PT_bridge(bpy.types.Panel):
         send.scale_y = 1.4
         send.enabled = is_session_file()
         send.operator("nodelizer.send_back", icon="EXPORT")
-        row = layout.row(align=True)
-        row.enabled = is_session_file()
-        row.operator("nodelizer.sync", icon="FILE_REFRESH")
         layout.operator("nodelizer.open_app", icon="WINDOW")
+        hint = layout.column(align=True)
+        hint.scale_y = 0.8
+        hint.label(text="Saving (Ctrl+S) also updates Nodelizer.")
+        hint.label(text="Send Back saves, updates and closes Blender.")
 
 
 classes = (NODELIZER_PT_bridge,)

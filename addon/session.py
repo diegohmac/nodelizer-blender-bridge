@@ -4,6 +4,10 @@
 The host passes the folder in NODELIZER_BRIDGE_SESSION. Everything about it is checked before
 use: its name, every field of session.json, and the names of the files read and written. The
 bridge only ever writes inside the session folder, plus the .blend file session.json names.
+
+A session is one scene: a .blend and the models the host connected to it. `imports` lists the
+models to bring in this time, each with the host's id for it, so a later session can replace
+just the one that changed.
 """
 
 from __future__ import annotations
@@ -19,9 +23,12 @@ SESSION_ENV = "NODELIZER_BRIDGE_SESSION"
 PORT_ENV = "NODELIZER_BRIDGE_PORT"
 TOKEN_ENV = "NODELIZER_BRIDGE_TOKEN"
 
-SCHEMA = 1
+SCHEMA = 2
+RESULT_SCHEMA = 1
 _FOLDER = re.compile(r"^session-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
-_SOURCE = re.compile(r"^source\.(glb|fbx|obj)$")
+_IMPORT_FILE = re.compile(r"^input-[0-9]{1,2}\.(glb|fbx|obj)$")
+_INPUT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+MAX_IMPORTS = 16
 _MAX_JSON = 64 * 1024
 FORMATS = ("glb", "fbx")
 
@@ -31,20 +38,28 @@ class SessionError(Exception):
 
 
 @dataclass(frozen=True)
+class Import:
+    """One model to bring into the scene: the host's id for it, its name and its file."""
+
+    input: str
+    name: str
+    file: str
+
+
+@dataclass(frozen=True)
 class Session:
     folder: str
     session_id: str
     project_name: str
-    asset_name: str
+    node_name: str
     format: str
-    source: str
     blend: str
-    # True when the .blend was just made from the model, so the view frames it once.
+    imports: tuple = ()
+    # True when the .blend was just made, so the view frames its models once.
     frame: bool = False
 
-    @property
-    def source_path(self) -> str:
-        return os.path.join(self.folder, self.source)
+    def import_path(self, item: Import) -> str:
+        return os.path.join(self.folder, item.file)
 
     def result_name(self, fmt: str | None = None) -> str:
         fmt = fmt or self.format
@@ -93,9 +108,20 @@ def load(folder: str) -> Session:
     fmt = data.get("format")
     if fmt not in FORMATS:
         raise SessionError("unknown format")
-    source = data.get("source")
-    if not isinstance(source, str) or not _SOURCE.match(source):
-        raise SessionError("bad source name")
+    raw = data.get("imports", [])
+    if not isinstance(raw, list) or len(raw) > MAX_IMPORTS:
+        raise SessionError("bad imports")
+    imports = []
+    for item in raw:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("input"), str)
+            or not _INPUT_ID.match(item["input"])
+            or not isinstance(item.get("file"), str)
+            or not _IMPORT_FILE.match(item["file"])
+        ):
+            raise SessionError("bad import")
+        imports.append(Import(input=item["input"], name=_name(item.get("name")), file=item["file"]))
     blend = data.get("blend")
     if (
         not isinstance(blend, str)
@@ -109,10 +135,10 @@ def load(folder: str) -> Session:
         folder=folder,
         session_id=match.group(1),
         project_name=_name(data.get("projectName")),
-        asset_name=_name(data.get("assetName")),
+        node_name=_name(data.get("nodeName")),
         format=fmt,
-        source=source,
         blend=os.path.normpath(blend),
+        imports=tuple(imports),
         frame=data.get("frame") is True,
     )
 
@@ -150,7 +176,7 @@ def write_result(session: Session, fmt: str, kind: str) -> str:
         raise SessionError("unknown result kind")
     name = session.result_name(fmt)
     record = {
-        "schema": SCHEMA,
+        "schema": RESULT_SCHEMA,
         "sessionId": session.session_id,
         "result": name,
         "format": fmt,
