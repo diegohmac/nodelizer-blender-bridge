@@ -37,7 +37,9 @@ The add-on removes the token from its environment once read. It's never written 
 - `blend` must be absolute, end in `.blend` and sit in a folder named `blender`.
 - `imports` are the models to bring in this time, at most 16. `input` is the host's id for the
   model (letters, digits, `-` and `_`), `name` names its collection, and `file` is
-  `input-<n>.<glb|fbx|obj>` inside the session folder. Each model's collection carries a
+  `input-<n>.<glb|fbx|obj>` inside the session folder. An OBJ that comes with its .mtl and
+  textures is unpacked into a folder instead, and `file` names its OBJ, like `input-1/model.obj`,
+  at most three folders further down (bridge 2.1.0 and later). Each model's collection carries a
   `nodelizer_input` property with its id, so a later session can replace just that one. An empty
   list opens the scene as it is.
 - `frame` is true when the `.blend` was just made, so the view fits its models once.
@@ -121,7 +123,39 @@ asking for an update.
 | 4 | A model couldn't be imported |
 | 5 | The `.blend` couldn't be saved |
 
+## The convert command
+
+```sh
+blender --background --addons bl_ext.user_default.nodelizer_bridge \
+  --command nodelizer_convert <job folder>
+```
+
+Saves one model in another format, with no window and no socket. The host makes a folder named
+`convert-<uuid>` holding the model and `job.json`:
+
+```json
+{ "schema": 1, "input": "input.glb", "format": "obj" }
+```
+
+- `input` is `input.<glb|fbx|obj|stl|usdz>`, or the OBJ of a bundle unpacked into `input/`, like
+  `input/model.obj`, at most three folders further down.
+- `format` is `glb`, `fbx`, `obj`, `stl` or `usdz`.
+
+The model comes into an empty scene and goes out as `result.<format>`. An OBJ goes out with its
+.mtl and its textures, packed or not, zipped together into `result.zip`. Nothing is read or
+written outside the job folder. Added in bridge 2.1.0; the protocol didn't change.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Done |
+| 2 | The job folder or job.json is wrong |
+| 4 | The model couldn't be imported |
+| 6 | The model couldn't be exported |
+
 ## Versions
+
+Bridge 2.1.0 added the convert command and OBJ files that bring their .mtl and textures. The
+host asks for 2.1.0 or later only for those, so older bridges keep working for everything else.
 
 Version 2 (bridge 2.0.0) made a session a scene of several models (`imports`, `nodeName`) instead
 of one (`source`, `assetName`), and saving in Blender now sends results.

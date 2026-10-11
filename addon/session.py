@@ -26,7 +26,11 @@ TOKEN_ENV = "NODELIZER_BRIDGE_TOKEN"
 SCHEMA = 2
 RESULT_SCHEMA = 1
 _FOLDER = re.compile(r"^session-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$")
-_IMPORT_FILE = re.compile(r"^input-[0-9]{1,2}\.(glb|fbx|obj)$")
+# One file, or the .obj of an OBJ the host unpacked with its materials and textures into a folder.
+_IMPORT_FILE = re.compile(
+    r"^input-[0-9]{1,2}(\.(glb|fbx|obj)|/([A-Za-z0-9 _.()-]{1,120}/){0,3}[A-Za-z0-9 _.()-]{1,120}\.obj)$",
+    re.IGNORECASE,
+)
 _INPUT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 MAX_IMPORTS = 16
 _MAX_JSON = 64 * 1024
@@ -59,7 +63,7 @@ class Session:
     frame: bool = False
 
     def import_path(self, item: Import) -> str:
-        return os.path.join(self.folder, item.file)
+        return os.path.join(self.folder, *item.file.split("/"))
 
     def result_name(self, fmt: str | None = None) -> str:
         fmt = fmt or self.format
@@ -119,6 +123,7 @@ def load(folder: str) -> Session:
             or not _INPUT_ID.match(item["input"])
             or not isinstance(item.get("file"), str)
             or not _IMPORT_FILE.match(item["file"])
+            or ".." in item["file"]
         ):
             raise SessionError("bad import")
         imports.append(Import(input=item["input"], name=_name(item.get("name")), file=item["file"]))

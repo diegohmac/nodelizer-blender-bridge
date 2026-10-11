@@ -18,10 +18,11 @@ import atexit
 
 import bpy
 
-from . import operators, panel, prepare, runtime
+from . import convert, operators, panel, prepare, runtime
 
 _classes = (*operators.classes, *panel.classes)
 _command = None
+_convert = None
 
 
 def _quit():
@@ -29,11 +30,13 @@ def _quit():
 
 
 def register():
-    global _command
+    global _command, _convert
     for cls in _classes:
         bpy.utils.register_class(cls)
     _command = bpy.utils.register_cli_command(prepare.COMMAND, prepare.execute)
-    # In the background (the prepare command) there's no window and nothing to connect.
+    _convert = bpy.utils.register_cli_command(convert.COMMAND, convert.execute)
+    # In the background (the prepare and convert commands) there's no window and nothing to
+    # connect.
     # Persistent, since Blender drops other timers when it loads the file it was opened with.
     if not bpy.app.background:
         bpy.app.timers.register(runtime.start, first_interval=0.5, persistent=True)
@@ -41,7 +44,7 @@ def register():
 
 
 def unregister():
-    global _command
+    global _command, _convert
     atexit.unregister(_quit)
     if bpy.app.timers.is_registered(runtime.start):
         bpy.app.timers.unregister(runtime.start)
@@ -49,5 +52,8 @@ def unregister():
     if _command is not None:
         bpy.utils.unregister_cli_command(_command)
         _command = None
+    if _convert is not None:
+        bpy.utils.unregister_cli_command(_convert)
+        _convert = None
     for cls in reversed(_classes):
         bpy.utils.unregister_class(cls)

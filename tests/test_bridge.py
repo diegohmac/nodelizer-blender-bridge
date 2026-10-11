@@ -23,7 +23,7 @@ _bpy.app = types.SimpleNamespace(
 sys.modules.setdefault("bpy", _bpy)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from addon import ipc, protocol  # noqa: E402
+from addon import convert, ipc, protocol  # noqa: E402
 from addon import session as sessions  # noqa: E402
 
 TOKEN = "t" * 43
@@ -188,6 +188,72 @@ class ClientTests(unittest.TestCase):
             ipc.Client(0, TOKEN, {})
         with self.assertRaises(ValueError):
             ipc.Client(1234, "short", {})
+
+
+
+def make_job(root, **overrides):
+    folder = os.path.join(root, f"convert-{uuid.uuid4()}")
+    os.makedirs(folder)
+    data = {"schema": 1, "input": "input.glb", "format": "obj", **overrides}
+    with open(os.path.join(folder, "job.json"), "w", encoding="utf-8") as handle:
+        json.dump(data, handle)
+    return folder
+
+
+class ConvertJobTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+
+    def test_loads_a_job_and_names_its_result(self):
+        job = convert.load(make_job(self.root))
+        self.assertEqual(job.format, "obj")
+        self.assertEqual(job.result_name, "result.zip")
+        self.assertTrue(job.input_path.endswith("input.glb"))
+        stl = convert.load(make_job(self.root, input="input.usdz", format="stl"))
+        self.assertEqual(stl.result_name, "result.stl")
+
+    def test_takes_an_obj_with_its_files_in_a_folder(self):
+        job = convert.load(make_job(self.root, input="input/Model (1).obj", format="glb"))
+        self.assertTrue(job.input_path.endswith(os.path.join("input", "Model (1).obj")))
+
+    def test_refuses_what_leaves_the_folder_or_isnt_known(self):
+        for overrides in (
+            {"input": "../input.glb"},
+            {"input": "input/../../x.obj"},
+            {"input": "/etc/input.glb"},
+            {"input": "input.blend"},
+            {"input": "input/model.mtl"},
+            {"format": "blend"},
+            {"schema": 2},
+        ):
+            with self.assertRaises(convert.JobError, msg=str(overrides)):
+                convert.load(make_job(self.root, **overrides))
+
+    def test_refuses_relative_and_odd_folders(self):
+        with self.assertRaises(convert.JobError):
+            convert.load("convert-x")
+        odd = os.path.join(self.root, "somewhere")
+        os.makedirs(odd)
+        with self.assertRaises(convert.JobError):
+            convert.load(odd)
+
+
+class BundleImportTests(unittest.TestCase):
+    def test_a_session_takes_an_unpacked_obj_but_nothing_outside_its_folder(self):
+        root = tempfile.mkdtemp()
+        folder, _ = make_session(
+            root, imports=[{"input": "a", "name": "Knight", "file": "input-0/knight.obj"}]
+        )
+        good = sessions.load(folder)
+        self.assertTrue(good.import_path(good.imports[0]).endswith(os.path.join("input-0", "knight.obj")))
+        nested, _ = make_session(
+            root, imports=[{"input": "a", "name": "Knight", "file": "input-0/model/knight.obj"}]
+        )
+        self.assertEqual(sessions.load(nested).imports[0].file, "input-0/model/knight.obj")
+        for file in ("input-0/../x.obj", "input-0/knight.mtl", "input-0/a/b/c/d/e.obj", "input-0//x.obj"):
+            folder, _ = make_session(root, imports=[{"input": "a", "name": "Knight", "file": file}])
+            with self.assertRaises(sessions.SessionError, msg=file):
+                sessions.load(folder)
 
 
 if __name__ == "__main__":

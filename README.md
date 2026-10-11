@@ -30,6 +30,10 @@ one `.blend`, each in its own collection. When you open it:
 The `.blend` stays with the Nodelizer project, named after the node, so opening it again later
 picks up where you left off, with modifiers, rigs, materials and everything else Blender keeps.
 
+A **Convert** node set to Blender uses it too, without opening a window: Nodelizer runs
+`blender --background --command nodelizer_convert <job folder>`, which brings one model into an
+empty scene and saves it as GLB, FBX, OBJ, STL or USDZ.
+
 ## What it will and won't do
 
 - It only talks to `127.0.0.1`, and only after presenting the session's token, which Nodelizer
@@ -54,6 +58,7 @@ addon/
   protocol.py            the messages, and the check that drops anything else
   export.py              bring models into collections, export GLB and FBX
   prepare.py             the nodelizer_prepare command: make or update the scene
+  convert.py             the nodelizer_convert command: save a model in another format
   runtime.py             the state of the bridge in this Blender
 scripts/build.py         builds the extension zip
 tests/                   tests that run without Blender
