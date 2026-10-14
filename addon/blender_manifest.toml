@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "nodelizer_bridge"
-version = "2.1.0"
+version = "2.2.0"
 name = "Nodelizer Bridge"
 tagline = "Edit Nodelizer models in Blender and send them back"
 maintainer = "Diego Machado"
@@ -15,5 +15,5 @@ license = ["SPDX:GPL-3.0-or-later"]
 copyright = ["2026 Diego Machado"]
 
 [permissions]
-files = "Read the model Nodelizer prepared and write the edited model back to the same folder"
+files = "Read the models Nodelizer prepares and write scenes and edited models back to the folders it names"
 network = "Talk to Nodelizer on this computer only (127.0.0.1)"

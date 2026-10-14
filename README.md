@@ -30,6 +30,11 @@ one `.blend`, each in its own collection. When you open it:
 The `.blend` stays with the Nodelizer project, named after the node, so opening it again later
 picks up where you left off, with modifiers, rigs, materials and everything else Blender keeps.
 
+A **Model Edit** node uses it without opening Blender at all: Nodelizer starts
+`blender --background --command nodelizer_worker`, which keeps the node's scene loaded, applies the
+moves Nodelizer sends (only fixed, checked edits, never code), saves the `.blend`, and writes what
+the scene looks like so Nodelizer can draw it in its own viewport.
+
 A **Convert** node set to Blender uses it too, without opening a window: Nodelizer runs
 `blender --background --command nodelizer_convert <job folder>`, which brings one model into an
 empty scene and saves it as GLB, FBX, OBJ, STL or USDZ.
@@ -41,7 +46,8 @@ empty scene and saves it as GLB, FBX, OBJ, STL or USDZ.
 - It understands a fixed list of messages (see [docs/PROTOCOL.md](docs/PROTOCOL.md)). It never
   runs code it receives.
 - It reads and writes only inside the session folder, plus the one `.blend` file `session.json`
-  names, after checking every path.
+  names, after checking every path. The worker reads and writes only inside a project's `blender`
+  folder, and only the paths the program that started it names on its stdin.
 - It holds no accounts, keys or Nodelizer business logic. It's a small, generic file and socket
   bridge.
 
@@ -59,6 +65,11 @@ addon/
   export.py              bring models into collections, export GLB and FBX
   prepare.py             the nodelizer_prepare command: make or update the scene
   convert.py             the nodelizer_convert command: save a model in another format
+  worker.py              the nodelizer_worker command: a background scene for Nodelizer's editor
+  worker_protocol.py     the worker's requests and answers, checked without Blender
+  edits.py               the edits the worker makes
+  scene_data.py          snapshots: objects, meshes and materials, written for the host
+  meshfile.py            the editable mesh file
   runtime.py             the state of the bridge in this Blender
 scripts/build.py         builds the extension zip
 tests/                   tests that run without Blender

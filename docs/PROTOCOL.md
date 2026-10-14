@@ -152,7 +152,145 @@ written outside the job folder. Added in bridge 2.1.0; the protocol didn't chang
 | 4 | The model couldn't be imported |
 | 6 | The model couldn't be exported |
 
+## The worker
+
+```sh
+blender --background --addons bl_ext.user_default.nodelizer_bridge --command nodelizer_worker
+```
+
+A Blender that stays open with no window, holding one scene at a time for the host's own 3D
+editor (Nodelizer's Model Edit node). It talks over its own stdin and stdout, so there's no port
+or token: only the process that started it can reach it. It stops when its stdin closes. Added in
+bridge 2.2.0; the socket protocol didn't change.
+
+### Lines
+
+The host writes one JSON object per line on stdin, at most 4 MiB. The worker answers on stdout,
+one JSON object per line starting with `@nlz ` (and preceded by a newline), since Blender prints
+its own lines there too. Anything else on stdout is Blender's.
+
+Its first line is `{"type":"ready","protocol":1,"bridgeVersion","blenderVersion"}`. Then:
+
+| Host | Worker |
+| --- | --- |
+| `{"id","type":"run","steps":[...]}` | `{"id","ok":true,"results":[...],"key","seconds"}` or `{"id","ok":false,"step","code","message","key","index"?}` |
+| `{"id","type":"ping"}` | `{"id","ok":true,"key"}` |
+| `{"id","type":"quit"}` | `{"id","ok":true}`, then it exits |
+
+`id` is 1 to 64 letters, digits, `-` and `_`. While a long step runs the worker may send
+`{"type":"progress","id","stage":"import"|"load"}`. `key` is the host's name for the scene the
+worker holds after the request, or null when it holds none.
+
+### Steps
+
+A `run` request is 1 to 16 steps, run in order until one fails. Every path must be absolute,
+plain (no `..`) and inside a folder named `blender`.
+
+| Step | Fields | What it does |
+| --- | --- | --- |
+| `load` | `key`, `blend` (a .blend, or null for an empty scene), `replay` (lists of edits) | Opens the .blend and applies each list of edits in turn. |
+| `import` | `key`, `source` (`.glb`, `.fbx`, `.obj`, `.stl` or `.usdz`) | Brings a model into an empty scene, packs its textures and gives every object a new id. |
+| `apply` | `from`, `to`, `ops` | Applies edits to the scene held as `from`; refused unless that's the one held. |
+| `save` | `blend` | Saves a copy of the scene there, the file written under another name first. |
+| `snapshot` | `folder`, `name` (`r<n>`), `appearance` (`"export"`, a SHA-256 to keep, or null) | Writes `<name>.json`, the mesh files it names that aren't there yet, and with `"export"`, the appearance GLB. |
+| `export` | `path`, `format` (`glb` or `fbx`) | Exports the scene as the bridge's own exports do. |
+
+When a step fails after the scene changed, the worker drops the scene (`key` null), so a half made
+edit is never saved by a later request. Edits refused before anything changed (`not_loaded`,
+`op_invalid`) leave it as it was.
+
+| Code | Meaning |
+| --- | --- |
+| `bad_request` | The line or a step didn't check out. |
+| `not_loaded` | `apply` named a scene the worker doesn't hold. |
+| `op_invalid` | An edit is malformed or names an object the scene doesn't have; `index` says which. |
+| `load_failed`, `replay_failed` | The .blend couldn't be opened, or its edits replayed. |
+| `import_failed` | The model couldn't be brought in. |
+| `save_failed`, `snapshot_failed`, `export_failed` | Writing failed. |
+| `internal` | Anything else. |
+
+### Edits
+
+There's no edit that runs code. Version 1 has one:
+
+```json
+{"op": "set_transform", "object": "1b8208f6608e", "location": [0, 0, 1], "rotation": [1, 0, 0, 0], "scale": [1, 1, 1]}
+```
+
+`object` is the object's id. `location`, `rotation` (a quaternion, w first, normalized by the
+worker) and `scale` are its own values, relative to its parent and without its delta transform;
+each is optional, but one is needed. The rotation is written in the object's own rotation mode,
+taking the Euler angles nearest the current ones. Numbers must be finite and within 10⁷. Every
+edit in a list is checked against the scene before any is made.
+
+### Objects and snapshots
+
+Each object carries a custom property `nodelizer_id`, 12 hex characters, which outlives renames.
+An imported scene gets random ids. A copied object carries its original's id; the later of the
+two by name gets one made from its own name, the same way on every computer.
+
+`<name>.json` describes the scene in Blender's coordinates (metres, Z up, matrices column by
+column):
+
+```json
+{
+  "schema": 1,
+  "units": {"system": "METRIC", "scaleLength": 1.0, "length": "METERS"},
+  "up": "Z",
+  "objects": [{
+    "id": "2a520b2b8f0b", "name": "Body", "type": "MESH",
+    "parent": "1b8208f6608e", "parentType": "OBJECT", "parentBone": null,
+    "location": [0, 0, 0], "rotationMode": "QUATERNION", "rotation": [1, 0, 0, 0], "scale": [1, 1, 1],
+    "matrixBasis": [16 numbers], "matrixParentInverse": [16 numbers], "matrixWorld": [16 numbers],
+    "dimensions": [0.4, 0.4, 1.7], "visible": true, "modifiers": [{"name": "Armature", "type": "ARMATURE"}],
+    "mesh": "<sha256>", "materials": ["Skin"], "vertexGroups": ["Hips", "Spine", "Head"]
+  }],
+  "meshes": {"<sha256>": {"vertices": 12, "edges": 30, "faces": 20, "loops": 60, "triangles": 20,
+             "uvLayers": [], "shapeKeys": [], "bounds": {"min": [...], "max": [...]}, "bytes": 3216}},
+  "appearance": "<sha256>"
+}
+```
+
+`rotation` is always a quaternion; `euler` (radians) is added for Euler modes and `delta` when the
+delta transform isn't nothing. Armatures list their `bones` with heads and tails in armature space.
+`appearance/<sha256>.glb` holds every material the scene's objects use, one triangle each, so
+materials and textures travel without the geometry.
+
+### The mesh file
+
+`mesh/<sha256>.bin`, named after its own SHA-256:
+
+```text
+"NLZM"            4 bytes
+version           uint32 little-endian, 1
+header length     uint32 little-endian
+header            UTF-8 JSON: {"counts", "uvLayers", "arrays": [{"name", "type", "offset", "length"}]}
+padding           zeros to a multiple of 16 bytes
+data              the arrays, each starting on a multiple of 16 bytes
+```
+
+`offset` is in bytes from the start of the data, `length` in elements; types are `f32`, `u32`,
+`u16` and `u8`, little-endian. The arrays:
+
+| Name | Type | Length | What |
+| --- | --- | --- | --- |
+| `positions` | f32 | 3 × vertices | Each vertex, in the object's own space |
+| `edges` | u32 | 2 × edges | Each edge's two vertices |
+| `faceLoopStart` | u32 | faces + 1 | Where each face's corners start; the last is the corner count |
+| `faceMaterial` | u16 | faces | Each face's material slot |
+| `loopVertex`, `loopEdge` | u32 | loops | Each corner's vertex and the edge after it |
+| `loopNormal` | f32 | 3 × loops | Each corner's shading normal |
+| `uv0`, `uv1`, ... | f32 | 2 × loops | Each UV layer, per corner, named in `uvLayers` |
+| `triangleLoops` | u32 | 3 × triangles | The corners of the triangles Blender draws |
+| `triangleFace` | u32 | triangles | The face each triangle belongs to |
+| `edgeSeam`, `edgeSharp` | u8 | edges | 1 for a UV seam, 1 for a sharp edge |
+| `groupOffset` | u32 | vertices + 1 | Where each vertex's weights start |
+| `groupIndex`, `groupWeight` | u16, f32 | weights | Each weight's vertex group (by the object's list) and value |
+
 ## Versions
+
+Bridge 2.2.0 added the worker. The host asks for 2.2.0 or later only for Model Edit, so older
+bridges keep working for everything else.
 
 Bridge 2.1.0 added the convert command and OBJ files that bring their .mtl and textures. The
 host asks for 2.1.0 or later only for those, so older bridges keep working for everything else.

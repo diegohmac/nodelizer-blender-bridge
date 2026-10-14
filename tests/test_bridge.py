@@ -7,20 +7,13 @@ import socket
 import sys
 import tempfile
 import threading
-import types
 import unittest
 import uuid
 
 # The add-on's package imports bpy; these tests only need its pure Python modules.
-_bpy = types.ModuleType("bpy")
-_bpy.types = types.SimpleNamespace(Operator=object, Panel=object)
-_bpy.app = types.SimpleNamespace(
-    background=True,
-    timers=None,
-    version_string="test",
-    handlers=types.SimpleNamespace(persistent=lambda function: function, save_post=[]),
-)
-sys.modules.setdefault("bpy", _bpy)
+sys.path.insert(0, os.path.dirname(__file__))
+import blender_stubs  # noqa: E402, F401
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from addon import convert, ipc, protocol  # noqa: E402
