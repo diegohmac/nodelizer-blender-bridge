@@ -335,6 +335,37 @@ Three edit vertex groups. Groups belong to the object, by name; their weights be
 Neither `add_vertex_group` nor `lock_vertex_groups` names components, so they may follow a change
 of topology on the same mesh.
 
+Four edit UV layers. Layers belong to the mesh, by name (1 to 63 bytes of UTF-8), so every object
+using it changes with it and is in `changed`. UVs are kept per face corner, so a vertex on a seam
+can have different UVs in each face around it without the mesh changing.
+
+```json
+{"op": "set_uvs", "object": "…", "layer": "UVMap", "count": 3, "data": "<sha256>", "file": "…"}
+{"op": "pin_uvs", "object": "…", "layer": "UVMap", "pinned": true, "count": 3, "data": "<sha256>", "file": "…"}
+{"op": "add_uv_layer", "object": "…", "name": "Lightmap", "copy": "UVMap"}
+{"op": "set_uv_layer", "object": "…", "layer": "Lightmap", "active": true, "render": true}
+```
+
+- `set_uvs` puts some corners' UVs in a layer at new places. The file is in the mesh file's layout
+  with header `{"kind": "uvs", "counts": {"corners": count}}` and two arrays: `corners` (u32,
+  strictly increasing, each a corner of the mesh) and `uvs` (f32, two per corner, finite and within
+  10⁷). Every other corner keeps its UVs.
+- `pin_uvs` pins or unpins some corners in a layer (Blender's UV pins, which unwrapping keeps in
+  place). The file is a components file (above) whose `component` is `corners`. Blender keeps a
+  layer's pins as a boolean corner attribute named `.pn.<layer>`, made the first time something is
+  pinned.
+- `add_uv_layer` adds a layer at the end of the mesh's list, every corner at (0, 0), or with `copy`,
+  a copy of that layer's UVs (not its pins). Refused when the name is taken by a layer or any other
+  attribute of the mesh, or when the mesh has 8 layers already (Blender's most). The mesh's first
+  layer becomes its active and rendered one, as in Blender.
+- `set_uv_layer` makes a layer the active one (`active`, the one Blender's UV editor shows) or the
+  rendered one (`render`, the one textures use and the glTF export points them at), or both. Each
+  flag is only ever `true`; one of them is needed.
+
+`add_uv_layer` and `set_uv_layer` name no components, so they may follow a change of topology on
+the same mesh. `set_uvs` and `pin_uvs` name corners, which a change of topology numbers anew, like
+any edit naming components.
+
 Every edit in a list is checked against the scene before any is made.
 
 ### Objects and snapshots
@@ -385,6 +416,7 @@ materials and textures travel without the geometry.
 version           uint32 little-endian, 1
 header length     uint32 little-endian
 header            UTF-8 JSON: {"counts", "uvLayers", "arrays": [{"name", "type", "offset", "length"}]}
+                  each uvLayers entry is {"name", "active", "activeRender", "pins"?}
 padding           zeros to a multiple of 16 bytes
 data              the arrays, each starting on a multiple of 16 bytes
 ```
@@ -401,6 +433,7 @@ data              the arrays, each starting on a multiple of 16 bytes
 | `loopVertex`, `loopEdge` | u32 | loops | Each corner's vertex and the edge after it |
 | `loopNormal` | f32 | 3 × loops | Each corner's shading normal |
 | `uv0`, `uv1`, ... | f32 | 2 × loops | Each UV layer, per corner, named in `uvLayers` |
+| `uvPin0`, `uvPin1`, ... | u8 | loops | 1 for a pinned corner, only for layers whose `uvLayers` entry has `"pins": true` |
 | `triangleLoops` | u32 | 3 × triangles | The corners of the triangles Blender draws |
 | `triangleFace` | u32 | triangles | The face each triangle belongs to |
 | `edgeSeam`, `edgeSharp` | u8 | edges | 1 for a UV seam, 1 for a sharp edge |
@@ -408,6 +441,10 @@ data              the arrays, each starting on a multiple of 16 bytes
 | `groupIndex`, `groupWeight` | u16, f32 | weights | Each weight's vertex group (by the object's list) and value |
 
 ## Versions
+
+Bridge 2.6.0 added UV layer edits (`set_uvs`, `pin_uvs`, `add_uv_layer`, `set_uv_layer`) and, in
+mesh files, each layer's pins (`uvPin<n>`, and `"pins": true` in its `uvLayers` entry) once it has
+any. The host asks for 2.6.0 or later for Model Edit.
 
 Bridge 2.5.0 added vertex group edits (`set_weights`, `add_vertex_group`, `lock_vertex_groups`)
 and, in snapshots, bones' rest matrices and deform flags, locked groups and the object a modifier

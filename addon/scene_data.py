@@ -164,9 +164,13 @@ def mesh_file(obj) -> tuple[bytes, dict]:
     layers = []
     for index, layer in enumerate(mesh.uv_layers):
         arrays.append((f"uv{index}", "f32", _get(layer.data, "uv", loops, np.float32, 2)))
-        layers.append(
-            {"name": layer.name, "active": layer.active, "activeRender": layer.active_render}
-        )
+        entry = {"name": layer.name, "active": layer.active, "activeRender": layer.active_render}
+        # Pins only once something on the layer was pinned: Blender keeps none before.
+        if loops and len(layer.pin) == loops:
+            pins = _get(layer.pin, "value", loops, bool).astype(np.uint8)
+            arrays.append((f"uvPin{index}", "u8", pins))
+            entry["pins"] = True
+        layers.append(entry)
     # Vertex groups, vertex by vertex: where each vertex's weights start, then group and weight.
     offsets = np.zeros(vertices + 1, dtype=np.uint32)
     groups: list[int] = []

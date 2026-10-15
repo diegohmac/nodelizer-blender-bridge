@@ -208,6 +208,37 @@ class RequestTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "op_invalid")
             self.assertEqual(caught.exception.index, 0)
 
+    def test_takes_uv_edits(self):
+        file = {"count": 4, "data": "d" * 64, "file": os.path.join(EDITS, "ops", "d" * 64 + ".bin")}
+        ops = [
+            {"op": "add_uv_layer", "object": "a", "name": "Lightmap", "copy": "UVMap"},
+            {"op": "set_uvs", "object": "a", "layer": "Lightmap", **file},
+            {"op": "pin_uvs", "object": "a", "layer": "Lightmap", "pinned": True, **file},
+            {"op": "set_uv_layer", "object": "a", "layer": "Lightmap", "render": True},
+            {"op": "add_uv_layer", "object": "a", "name": "Empty"},
+        ]
+        checked = wp.check_ops(ops)
+        self.assertEqual(checked[0]["copy"], "UVMap")
+        self.assertEqual(checked[2]["pinned"], True)
+        self.assertEqual(checked[3], {"op": "set_uv_layer", "object": "a", "layer": "Lightmap", "render": True})
+        self.assertNotIn("copy", checked[4])
+        for op in (
+            {**ops[0], "name": ""},
+            {**ops[0], "name": "x" * 64},
+            {**ops[0], "copy": ""},
+            {**ops[0], "extra": 1},
+            {**ops[1], "layer": "a\0b"},
+            {**ops[1], "count": 0},
+            {k: v for k, v in ops[1].items() if k != "layer"},
+            {**ops[2], "pinned": 1},
+            {**ops[3], "render": False},
+            {"op": "set_uv_layer", "object": "a", "layer": "Lightmap"},
+        ):
+            with self.assertRaises(wp.RequestError, msg=json.dumps(op)) as caught:
+                wp.check_ops([op])
+            self.assertEqual(caught.exception.code, "op_invalid")
+            self.assertEqual(caught.exception.index, 0)
+
     def test_bad_lines_keep_their_id_when_they_have_one(self):
         with self.assertRaises(wp.RequestError):
             wp.decode(b"not json\n")
@@ -296,6 +327,38 @@ class MeshFileTests(unittest.TestCase):
             damaged = meshfile.pack([("indices", "u32", array.array("I", [3, 8, 9]))], header)
             with self.assertRaises(ValueError):
                 meshfile.read_components(damaged)
+
+    def test_reads_corner_files_only_where_asked(self):
+        data = meshfile.pack(
+            [("indices", "u32", array.array("I", [0, 5]))],
+            {"kind": "components", "component": "corners", "counts": {"items": 2}},
+        )
+        self.assertEqual(meshfile.read_components(data, ("corners",))[:2], ("corners", 2))
+        with self.assertRaises(ValueError):
+            meshfile.read_components(data)
+
+    def test_reads_uv_files_as_the_host_writes_them(self):
+        data = meshfile.pack(
+            [
+                ("corners", "u32", array.array("I", [2, 7])),
+                ("uvs", "f32", array.array("f", [0.25, 0.5, 1, 0])),
+            ],
+            {"kind": "uvs", "counts": {"corners": 2}},
+        )
+        count, corners, uvs = meshfile.read_uvs(data)
+        self.assertEqual(count, 2)
+        self.assertEqual(list(struct.unpack("<2I", corners)), [2, 7])
+        self.assertEqual(list(struct.unpack("<4f", uvs)), [0.25, 0.5, 1, 0])
+        for damaged in (
+            data.replace(b'"corners":2', b'"corners":3'),
+            data.replace(b'"kind":"uvs"', b'"kind":"uvz"'),
+            meshfile.pack(
+                [("corners", "u32", array.array("I", [2])), ("uvs", "f32", array.array("f", [0]))],
+                {"kind": "uvs", "counts": {"corners": 1}},
+            ),
+        ):
+            with self.assertRaises(ValueError):
+                meshfile.read_uvs(damaged)
 
     def test_reads_weight_files_as_the_host_writes_them(self):
         data = meshfile.pack(

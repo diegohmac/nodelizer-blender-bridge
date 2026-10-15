@@ -70,6 +70,7 @@ addon/
   worker_protocol.py     the worker's requests and answers, checked without Blender
   edits.py               the edits the worker makes
   topology.py            loop cuts, knife cuts, merges and other changes of topology
+  uvs.py                 UV layer edits: UVs, pins, new layers
   scene_data.py          snapshots: objects, meshes and materials, written for the host
   meshfile.py            the editable mesh file
   runtime.py             the state of the bridge in this Blender

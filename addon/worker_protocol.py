@@ -34,7 +34,11 @@ STEPS = ("load", "import", "apply", "save", "snapshot", "export")
 TOPOLOGY = ("loop_cut", "subdivide", "knife", "merge", "merge_by_distance", "delete", "dissolve")
 # Edits of vertex groups: weights, new groups and locks.
 WEIGHTS = ("set_weights", "add_vertex_group", "lock_vertex_groups")
-OPS = ("set_transform", "set_vertices", *TOPOLOGY, *WEIGHTS)
+# Edits of UV layers: corners' UVs and pins, new layers, and which layer is active or rendered.
+UVS = ("set_uvs", "pin_uvs", "add_uv_layer", "set_uv_layer")
+OPS = ("set_transform", "set_vertices", *TOPOLOGY, *WEIGHTS, *UVS)
+# Edits that name no components, so they may follow a change of topology on the same mesh.
+UNNUMBERED = ("set_transform", "add_vertex_group", "lock_vertex_groups", "add_uv_layer", "set_uv_layer")
 # The most vertices one edit moves, and the most components one edit names in its file.
 MAX_VERTICES = 16_000_000
 # The most edges a loop cut's ring has, and the most points a knife cut has.
@@ -45,6 +49,9 @@ COMPONENTS = ("vertices", "edges", "faces")
 # The most vertex groups one edit names; Blender's names are at most 63 bytes.
 MAX_GROUPS = 1024
 MAX_GROUP_NAME = 63
+# Blender keeps a UV layer's name to 63 bytes too, and a mesh to 8 UV layers.
+MAX_UV_NAME = 63
+MAX_UV_LAYERS = 8
 # Which components each edit over a set takes; delete and dissolve take any of them.
 _SET_OF = {"subdivide": ("edges",), "merge": ("vertices",), "merge_by_distance": ("vertices",)}
 SOURCE_EXTENSIONS = (".glb", ".fbx", ".obj", ".stl", ".usdz")
@@ -203,6 +210,51 @@ def _check_weights(op) -> dict:
     return out
 
 
+def _uv_name(value, what: str = "a UV layer name") -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\0" in value
+        or len(value.encode("utf-8")) > MAX_UV_NAME
+    ):
+        raise RequestError(f"{what} is 1 to 63 bytes", "op_invalid")
+    return value
+
+
+def _check_uvs(op) -> dict:
+    kind = op["op"]
+    out = {"op": kind, "object": _object(op)}
+    if kind == "set_uvs":
+        _fields(op, {"op", "object", "layer", "count", "data", "file"})
+        out["layer"] = _uv_name(op["layer"])
+        out.update(_component_file(op))
+        return out
+    if kind == "pin_uvs":
+        _fields(op, {"op", "object", "layer", "pinned", "count", "data", "file"})
+        out["layer"] = _uv_name(op["layer"])
+        if not isinstance(op["pinned"], bool):
+            raise RequestError("pinned is true or false", "op_invalid")
+        out["pinned"] = op["pinned"]
+        out.update(_component_file(op))
+        return out
+    if kind == "add_uv_layer":
+        _fields(op, {"op", "object", "name"}, {"copy"})
+        out["name"] = _uv_name(op["name"])
+        if "copy" in op:
+            out["copy"] = _uv_name(op["copy"], "the layer to copy")
+        return out
+    _fields(op, {"op", "object", "layer"}, {"active", "render"})
+    out["layer"] = _uv_name(op["layer"])
+    for flag in ("active", "render"):
+        if flag in op:
+            if op[flag] is not True:
+                raise RequestError(f"{flag} is only ever true", "op_invalid")
+            out[flag] = True
+    if len(out) == 3:
+        raise RequestError("set_uv_layer makes a layer active, rendered or both", "op_invalid")
+    return out
+
+
 def _check_topology(op) -> dict:
     kind = op["op"]
     out = {"op": kind, "object": _object(op)}
@@ -272,6 +324,8 @@ def check_op(op, index: int) -> dict:
             return _check_topology(op)
         if op["op"] in WEIGHTS:
             return _check_weights(op)
+        if op["op"] in UVS:
+            return _check_uvs(op)
         if op["op"] == "set_transform":
             allowed = {"op", "object", "location", "rotation", "scale"}
             if set(op) - allowed:

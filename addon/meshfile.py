@@ -124,16 +124,19 @@ def read_vertex_positions(data: bytes) -> tuple[int, memoryview, memoryview]:
     return count, indices[1], positions[1]
 
 
-def read_components(data: bytes) -> tuple[str, int, memoryview]:
-    """A file of components an edit works on, as the host writes it: which kind (`vertices`,
-    `edges` or `faces`), how many and their indices (u32, increasing), as raw little-endian bytes."""
+def read_components(
+    data: bytes, kinds: tuple[str, ...] = ("vertices", "edges", "faces")
+) -> tuple[str, int, memoryview]:
+    """A file of components an edit works on, as the host writes it: which kind (one of `kinds`:
+    `vertices`, `edges` or `faces`, or `corners` for a UV edit), how many and their indices (u32,
+    increasing), as raw little-endian bytes."""
     header, arrays = read(data)
     component = header.get("component")
     count = (header.get("counts") or {}).get("items")
     indices = arrays.get("indices")
     if (
         header.get("kind") != "components"
-        or component not in ("vertices", "edges", "faces")
+        or component not in kinds
         or not isinstance(count, int)
         or isinstance(count, bool)
         or indices is None
@@ -169,3 +172,25 @@ def read_weights(data: bytes) -> tuple[int, memoryview, memoryview, memoryview]:
     ):
         raise ValueError("not a file of weights")
     return count, vertices[1], groups[1], weights[1]
+
+
+def read_uvs(data: bytes) -> tuple[int, memoryview, memoryview]:
+    """A UV edit's file, as the host writes it: how many face corners, their indices (u32) and their
+    new UVs (two f32 each), as raw little-endian bytes."""
+    header, arrays = read(data)
+    count = (header.get("counts") or {}).get("corners")
+    corners = arrays.get("corners")
+    uvs = arrays.get("uvs")
+    if (
+        header.get("kind") != "uvs"
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or corners is None
+        or uvs is None
+        or corners[0] != "u32"
+        or uvs[0] != "f32"
+        or len(corners[1]) != count * 4
+        or len(uvs[1]) != count * 8
+    ):
+        raise ValueError("not a file of UVs")
+    return count, corners[1], uvs[1]

@@ -5,7 +5,7 @@ Edits that change a mesh's topology are in topology.py.
 
 Vertex groups belong to the object, by name; their weights belong to the mesh, by the object's
 group index. A weight edit sets each weight it lists, putting the vertex in the group when it wasn't,
-and leaves every other weight as it was."""
+and leaves every other weight as it was. UV layers belong to the mesh; their edits are in uvs.py."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import bpy
 import numpy as np
 from mathutils import Quaternion
 
-from . import meshfile, scene_data, topology
-from .worker_protocol import MAX_COORDINATE, TOPOLOGY, WEIGHTS, RequestError
+from . import meshfile, scene_data, topology, uvs
+from .worker_protocol import MAX_COORDINATE, TOPOLOGY, UNNUMBERED, UVS, WEIGHTS, RequestError
 
 
 def _vertex_positions(op: dict, obj) -> tuple[np.ndarray, np.ndarray]:
@@ -95,11 +95,13 @@ def check(ops: list[dict]) -> tuple[dict, list]:
     prepared = []
     topologies: dict = {}
     last = {}
-    # Each object's vertex group names as the edits before each one leave them.
+    # Each object's vertex group names, and each mesh's UV layer names, as the edits before each one
+    # leave them.
     groups: dict = {}
+    layers: dict = {}
     for index, op in enumerate(ops):
         obj = objects.get(op["object"])
-        names_components = op["op"] not in ("set_transform", "add_vertex_group", "lock_vertex_groups")
+        names_components = op["op"] not in UNNUMBERED
         if obj is not None and names_components and obj.type == "MESH" and obj.data:
             last[obj.data.name_full] = index
     for index, op in enumerate(ops):
@@ -116,6 +118,12 @@ def check(ops: list[dict]) -> tuple[dict, list]:
                 if mesh.name_full not in topologies:
                     topologies[mesh.name_full] = topology.Topology(mesh)
                 prepared.append(topology.check(op, mesh, _users(mesh), topologies[mesh.name_full]))
+            elif op["op"] in UVS:
+                if obj.type != "MESH" or obj.data is None:
+                    raise RequestError("not a mesh", "op_invalid")
+                mesh = obj.data
+                names = layers.setdefault(mesh.name_full, [layer.name for layer in mesh.uv_layers])
+                prepared.append(uvs.check(op, mesh, names))
             elif op["op"] in WEIGHTS:
                 if obj.type != "MESH" or obj.data is None:
                     raise RequestError("not a mesh", "op_invalid")
@@ -229,6 +237,8 @@ def apply(ops: list[dict]) -> tuple[list[str], list[str], list]:
                 _set_vertices(mesh, *ready)
             elif op["op"] == "set_weights":
                 _set_weights(obj, op, *ready)
+            elif op["op"] in UVS:
+                uvs.apply(mesh, op, ready)
             else:
                 try:
                     report = topology.apply(mesh, op, ready)
