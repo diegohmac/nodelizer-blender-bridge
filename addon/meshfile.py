@@ -122,3 +122,23 @@ def read_vertex_positions(data: bytes) -> tuple[int, memoryview, memoryview]:
     ):
         raise ValueError("not a file of vertex positions")
     return count, indices[1], positions[1]
+
+
+def read_components(data: bytes) -> tuple[str, int, memoryview]:
+    """A file of components an edit works on, as the host writes it: which kind (`vertices`,
+    `edges` or `faces`), how many and their indices (u32, increasing), as raw little-endian bytes."""
+    header, arrays = read(data)
+    component = header.get("component")
+    count = (header.get("counts") or {}).get("items")
+    indices = arrays.get("indices")
+    if (
+        header.get("kind") != "components"
+        or component not in ("vertices", "edges", "faces")
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or indices is None
+        or indices[0] != "u32"
+        or len(indices[1]) != count * 4
+    ):
+        raise ValueError("not a file of components")
+    return component, count, indices[1]

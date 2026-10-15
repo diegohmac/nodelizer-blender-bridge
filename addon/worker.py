@@ -30,7 +30,7 @@ from .worker_protocol import (
 COMMAND = "nodelizer_worker"
 _MUTATING = ("load", "import", "apply")
 # Failures that happen before a step changes anything.
-_UNTOUCHED = ("not_loaded", "op_invalid")
+_UNTOUCHED = ("not_loaded", "op_invalid", "op_unsupported")
 
 
 def send(message: dict):
@@ -109,13 +109,13 @@ class Worker:
         if self.key is None or self.key != step["from"]:
             raise Failure("not_loaded", "another scene is loaded")
         try:
-            changed, meshes = edits.apply(step["ops"])
+            changed, meshes, reports = edits.apply(step["ops"])
         except RequestError as error:
             raise Failure(error.code, str(error), error.index) from error
-        # Moved vertices make a new mesh file; unmoved meshes keep theirs.
+        # Changed meshes make a new mesh file; the others keep theirs.
         self.snapshots.forget(meshes)
         self.key = step["to"]
-        return {"key": self.key, "changed": changed}
+        return {"key": self.key, "changed": changed, "reports": reports}
 
     def _save(self, step: dict) -> dict:
         try:

@@ -32,7 +32,8 @@ picks up where you left off, with modifiers, rigs, materials and everything else
 
 A **Model Edit** node uses it without opening Blender at all: Nodelizer starts
 `blender --background --command nodelizer_worker`, which keeps the node's scene loaded, applies the
-object and vertex moves Nodelizer sends (only fixed, checked edits, never code), saves the
+object and vertex moves, loop cuts, knife cuts, merges and other mesh edits Nodelizer sends (only
+fixed, checked edits, never code), saves the
 `.blend`, and writes what the scene looks like so Nodelizer can draw it in its own viewport.
 
 A **Convert** node set to Blender uses it too, without opening a window: Nodelizer runs
@@ -68,6 +69,7 @@ addon/
   worker.py              the nodelizer_worker command: a background scene for Nodelizer's editor
   worker_protocol.py     the worker's requests and answers, checked without Blender
   edits.py               the edits the worker makes
+  topology.py            loop cuts, knife cuts, merges and other changes of topology
   scene_data.py          snapshots: objects, meshes and materials, written for the host
   meshfile.py            the editable mesh file
   runtime.py             the state of the bridge in this Blender

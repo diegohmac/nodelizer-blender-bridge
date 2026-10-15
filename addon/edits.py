@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The edits the worker makes to its scene. Each has been checked by worker_protocol first; here
-they're checked against the scene, all of them before any is made, so a batch is all or nothing."""
+they're checked against the scene, all of them before any is made, so a batch is all or nothing.
+Edits that change a mesh's topology are in topology.py."""
 
 from __future__ import annotations
 
@@ -8,8 +9,8 @@ import bpy
 import numpy as np
 from mathutils import Quaternion
 
-from . import meshfile, scene_data
-from .worker_protocol import MAX_COORDINATE, RequestError
+from . import meshfile, scene_data, topology
+from .worker_protocol import MAX_COORDINATE, TOPOLOGY, RequestError
 
 
 def _vertex_positions(op: dict, obj) -> tuple[np.ndarray, np.ndarray]:
@@ -41,16 +42,39 @@ def _vertex_positions(op: dict, obj) -> tuple[np.ndarray, np.ndarray]:
     return indices, positions
 
 
+def _users(mesh) -> list:
+    return [obj for obj in scene_data.scene_objects() if obj.data == mesh]
+
+
 def check(ops: list[dict]) -> tuple[dict, list]:
-    """The scene's objects by id and what each edit needs, once every edit fits the scene."""
+    """The scene's objects by id and what each edit needs, once every edit fits the scene.
+
+    A change of topology numbers a mesh's components anew, so it has to be the last edit of its
+    mesh in a batch: anything after it would name components of a mesh it can't know yet."""
     objects = scene_data.by_id()
     prepared = []
+    topologies: dict = {}
+    last = {}
+    for index, op in enumerate(ops):
+        obj = objects.get(op["object"])
+        if obj is not None and op["op"] != "set_transform" and obj.type == "MESH" and obj.data:
+            last[obj.data.name_full] = index
     for index, op in enumerate(ops):
         obj = objects.get(op["object"])
         try:
             if obj is None:
                 raise RequestError("unknown object", "op_invalid")
-            prepared.append(_vertex_positions(op, obj) if op["op"] == "set_vertices" else None)
+            if op["op"] in TOPOLOGY:
+                if obj.type != "MESH" or obj.data is None:
+                    raise RequestError("not a mesh", "op_invalid")
+                mesh = obj.data
+                if last[mesh.name_full] != index:
+                    raise RequestError("a change of topology has to be its mesh's last edit", "op_invalid")
+                if mesh.name_full not in topologies:
+                    topologies[mesh.name_full] = topology.Topology(mesh)
+                prepared.append(topology.check(op, mesh, _users(mesh), topologies[mesh.name_full]))
+            else:
+                prepared.append(_vertex_positions(op, obj) if op["op"] == "set_vertices" else None)
         except RequestError as error:
             error.index = index
             raise
@@ -110,28 +134,39 @@ def _set_vertices(mesh, indices: np.ndarray, positions: np.ndarray):
     mesh.update()
 
 
-def apply(ops: list[dict]) -> tuple[list[str], list[str]]:
-    """Makes the edits. Returns the ids of the objects they changed, and the names of the meshes
-    whose vertices moved, whose files have to be written again."""
+def apply(ops: list[dict]) -> tuple[list[str], list[str], list]:
+    """Makes the edits. Returns the ids of the objects they changed, the names of the meshes that
+    changed, whose files have to be written again, and for each edit what it reports: what to
+    select after a change of topology, or None."""
     objects, prepared = check(ops)
     changed = []
     meshes = []
-    for op, ready in zip(ops, prepared):
+    reports = []
+    for index, (op, ready) in enumerate(zip(ops, prepared)):
         obj = objects[op["object"]]
+        report = None
         if op["op"] == "set_transform":
             touched = [obj]
             _set_transform(obj, op)
         else:
             mesh = obj.data
-            _set_vertices(mesh, *ready)
+            if op["op"] == "set_vertices":
+                _set_vertices(mesh, *ready)
+            else:
+                try:
+                    report = topology.apply(mesh, op, ready)
+                except RequestError as error:
+                    error.index = index
+                    raise
             if mesh.name_full not in meshes:
                 meshes.append(mesh.name_full)
             # Every object using the mesh changes with it, as in Blender.
-            touched = [other for other in scene_data.scene_objects() if other.data == mesh]
+            touched = _users(mesh)
+        reports.append(report)
         for each in touched:
             each_id = each.get(scene_data.ID_PROP)
             if each_id and each_id not in changed:
                 changed.append(each_id)
     # Matrices follow the new values only once the scene is evaluated.
     bpy.context.view_layer.update()
-    return changed, meshes
+    return changed, meshes, reports

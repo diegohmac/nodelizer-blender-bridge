@@ -30,9 +30,18 @@ _SNAPSHOT_NAME = re.compile(r"^r[0-9]{1,9}$")
 _SHA = re.compile(r"^[a-f0-9]{64}$")
 
 STEPS = ("load", "import", "apply", "save", "snapshot", "export")
-OPS = ("set_transform", "set_vertices")
-# The most vertices one edit moves.
+# Edits that change a mesh's vertices, edges and faces, not just where its vertices are.
+TOPOLOGY = ("loop_cut", "subdivide", "knife", "merge", "merge_by_distance", "delete", "dissolve")
+OPS = ("set_transform", "set_vertices", *TOPOLOGY)
+# The most vertices one edit moves, and the most components one edit names in its file.
 MAX_VERTICES = 16_000_000
+# The most edges a loop cut's ring has, and the most points a knife cut has.
+MAX_RING = 100_000
+MAX_KNIFE_POINTS = 20_000
+MAX_CUTS = 64
+COMPONENTS = ("vertices", "edges", "faces")
+# Which components each edit over a set takes; delete and dissolve take any of them.
+_SET_OF = {"subdivide": ("edges",), "merge": ("vertices",), "merge_by_distance": ("vertices",)}
 SOURCE_EXTENSIONS = (".glb", ".fbx", ".obj", ".stl", ".usdz")
 OUTPUT_FORMATS = ("glb", "fbx")
 
@@ -86,11 +95,136 @@ def _vector(value, size: int, what: str) -> list[float]:
     return out
 
 
+def _whole(value, low: int, high: int, what: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise RequestError(f"bad {what}", "op_invalid")
+    return value
+
+
+def _fraction(value, what: str, low: float, high: float) -> float:
+    """A number strictly between `low` and `high`."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RequestError(f"{what} needs a number", "op_invalid")
+    number = float(value)
+    if not math.isfinite(number) or not low < number < high:
+        raise RequestError(f"{what} is out of range", "op_invalid")
+    return number
+
+
+def _object(op) -> str:
+    if not isinstance(op.get("object"), str) or not _ID.match(op["object"]):
+        raise RequestError("bad object id", "op_invalid")
+    return op["object"]
+
+
+def _fields(op, needed: set, optional: set = frozenset()):
+    keys = set(op)
+    if not needed <= keys or keys - needed - optional:
+        fields = ", ".join(sorted(needed - {"op"}))
+        raise RequestError(f"{op['op']} takes {fields}", "op_invalid")
+
+
+def _component_file(op) -> dict:
+    """The file an edit over a set of components names: how many, its hash and where it is."""
+    count = op["count"]
+    whole = isinstance(count, int) and not isinstance(count, bool)
+    if not whole or not 1 <= count <= MAX_VERTICES:
+        raise RequestError("bad component count", "op_invalid")
+    if not isinstance(op["data"], str) or not _SHA.match(op["data"]):
+        raise RequestError("bad component file hash", "op_invalid")
+    try:
+        file = _path(op["file"], (".bin",), "file")
+    except RequestError as error:
+        raise RequestError(str(error), "op_invalid") from error
+    return {"count": count, "data": op["data"], "file": file}
+
+
+def _knife_point(point) -> dict:
+    if not isinstance(point, dict):
+        raise RequestError("a knife point isn't an object", "op_invalid")
+    keys = set(point)
+    if keys == {"vertex"}:
+        return {"vertex": _whole(point["vertex"], 0, MAX_VERTICES, "knife vertex")}
+    if keys == {"edge", "factor"}:
+        return {
+            "edge": _whole(point["edge"], 0, MAX_VERTICES, "knife edge"),
+            "factor": _fraction(point["factor"], "knife factor", 0.0, 1.0),
+        }
+    if keys == {"face", "at"}:
+        return {
+            "face": _whole(point["face"], 0, MAX_VERTICES, "knife face"),
+            "at": _vector(point["at"], 3, "knife point"),
+        }
+    raise RequestError("a knife point is a vertex, an edge and factor, or a face and place", "op_invalid")
+
+
+def _check_topology(op) -> dict:
+    kind = op["op"]
+    out = {"op": kind, "object": _object(op)}
+    if kind == "loop_cut":
+        _fields(op, {"op", "object", "edges", "cuts", "factor"})
+        edges = op["edges"]
+        if not isinstance(edges, list) or not 1 <= len(edges) <= MAX_RING:
+            raise RequestError("a loop cut needs its ring of edges", "op_invalid")
+        out["edges"] = [_whole(edge, 0, MAX_VERTICES, "ring edge") for edge in edges]
+        if len(set(out["edges"])) != len(out["edges"]):
+            raise RequestError("a ring names an edge twice", "op_invalid")
+        out["cuts"] = _whole(op["cuts"], 1, MAX_CUTS, "cut count")
+        out["factor"] = _fraction(op["factor"], "factor", -1.0, 1.0)
+        return out
+    if kind == "knife":
+        _fields(op, {"op", "object", "points", "faces"})
+        points, faces = op["points"], op["faces"]
+        if not isinstance(points, list) or not 2 <= len(points) <= MAX_KNIFE_POINTS:
+            raise RequestError("a knife cut needs 2 or more points", "op_invalid")
+        if not isinstance(faces, list) or len(faces) != len(points) - 1:
+            raise RequestError("a knife cut names the face of each of its parts", "op_invalid")
+        out["points"] = [_knife_point(point) for point in points]
+        out["faces"] = [_whole(face, 0, MAX_VERTICES, "knife face") for face in faces]
+        return out
+    needed = {"op", "object", "count", "data", "file"}
+    if kind in ("delete", "dissolve"):
+        needed.add("component")
+        if op.get("component") not in COMPONENTS:
+            raise RequestError("bad component", "op_invalid")
+        out["component"] = op["component"]
+    else:
+        out["component"] = _SET_OF[kind][0]
+    if kind == "subdivide":
+        needed.add("cuts")
+    if kind == "merge":
+        needed.add("at")
+    if kind == "merge_by_distance":
+        needed.add("distance")
+    _fields(op, needed, {"vertex"} if kind == "merge" else set())
+    out.update(_component_file(op))
+    if kind == "subdivide":
+        out["cuts"] = _whole(op["cuts"], 1, MAX_CUTS, "cut count")
+    if kind == "merge":
+        if op["at"] not in ("center", "collapse", "vertex"):
+            raise RequestError("merge goes to the center, collapses or goes to a vertex", "op_invalid")
+        out["at"] = op["at"]
+        if (op["at"] == "vertex") != ("vertex" in op):
+            raise RequestError("a merge at a vertex names the vertex, and only then", "op_invalid")
+        if "vertex" in op:
+            out["vertex"] = _whole(op["vertex"], 0, MAX_VERTICES, "vertex")
+    if kind == "merge_by_distance":
+        distance = op["distance"]
+        if isinstance(distance, bool) or not isinstance(distance, (int, float)):
+            raise RequestError("distance needs a number", "op_invalid")
+        if not math.isfinite(distance) or not 0 <= distance <= MAX_COORDINATE:
+            raise RequestError("distance is out of range", "op_invalid")
+        out["distance"] = float(distance)
+    return out
+
+
 def check_op(op, index: int) -> dict:
     """One edit, with only the fields it may have."""
     if not isinstance(op, dict) or op.get("op") not in OPS:
         raise RequestError("unknown operation", "op_invalid", index)
     try:
+        if op["op"] in TOPOLOGY:
+            return _check_topology(op)
         if op["op"] == "set_transform":
             allowed = {"op", "object", "location", "rotation", "scale"}
             if set(op) - allowed:

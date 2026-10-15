@@ -197,13 +197,18 @@ plain (no `..`) and inside a folder named `blender`.
 
 When a step fails after the scene changed, the worker drops the scene (`key` null), so a half made
 edit is never saved by a later request. Edits refused before anything changed (`not_loaded`,
-`op_invalid`) leave it as it was.
+`op_invalid`, `op_unsupported`) leave it as it was.
+
+`apply` answers `{"key", "changed", "reports"}`: the ids of the objects the edits changed, and for
+each edit, null or, for a change of topology, what it did (see below).
 
 | Code | Meaning |
 | --- | --- |
 | `bad_request` | The line or a step didn't check out. |
 | `not_loaded` | `apply` named a scene the worker doesn't hold. |
 | `op_invalid` | An edit is malformed or names an object the scene doesn't have; `index` says which. |
+| `op_unsupported` | A change of topology on a mesh with a modifier that keeps data per vertex; `message` is the modifier's name as Blender shows it. |
+| `op_failed` | A change of topology that checked out couldn't be made, like a knife cut crossing itself inside a face. The scene is dropped. |
 | `load_failed`, `replay_failed` | The .blend couldn't be opened, or its edits replayed. |
 | `import_failed` | The model couldn't be brought in. |
 | `save_failed`, `snapshot_failed`, `export_failed` | Writing failed. |
@@ -211,7 +216,7 @@ edit is never saved by a later request. Edits refused before anything changed (`
 
 ### Edits
 
-There's no edit that runs code. There are two:
+There's no edit that runs code. Two move things:
 
 ```json
 {"op": "set_transform", "object": "1b8208f6608e", "location": [0, 0, 1], "rotation": [1, 0, 0, 0], "scale": [1, 1, 1]}
@@ -235,6 +240,77 @@ the basis key rather than the vertices, so the basis moves too and keys relative
 same amount, as leaving edit mode does in Blender. Every object using the mesh changes with it, and
 `changed` lists them all. UVs, materials, vertex groups, seams and sharp edges stay as they were; a
 moved mesh gets a new mesh file in the next snapshot.
+
+The rest change a mesh's topology: which vertices, edges and faces it has. They work on the mesh
+in its rest state with BMesh, as edit mode does, and write it back only once the edit worked. Each
+has to be the last edit of its mesh in a list (anything after it would name components of a mesh
+it can't know yet), and none is made on a mesh whose objects have a Multires, Hook, Surface
+Deform, Mesh Deform or Laplacian Deform modifier, or a bound Corrective Smooth (`op_unsupported`).
+Edits over a set of components name a file in the mesh file's layout with header `{"kind":
+"components", "component": "vertices" | "edges" | "faces", "counts": {"items": count}}` and one
+array, `indices` (u32, strictly increasing), checked like a vertex file: `count`, `data` (its
+SHA-256) and `file`.
+
+```json
+{"op": "loop_cut", "object": "…", "edges": [12, 9, 4, 1], "cuts": 2, "factor": 0.25}
+```
+
+`edges` is a ring, in order: each two are opposite sides of the quad between them, and when the
+last and the first are too, through a quad the ring hasn't used, it closes. The first edge runs from
+its first vertex, each next one from the corner next to the previous one's start across their quad.
+Cut k of `cuts` (1 to 64) sits at `(k + factor) / (cuts + 1)` along each edge, `factor` strictly
+between -1 and 1; the cuts are joined across each quad. A ring that closes the other way round, like
+a Möbius strip, joins its last cuts to the first in reverse.
+
+```json
+{"op": "knife", "object": "…", "points": [{"vertex": 3}, {"face": 7, "at": [0.1, 0.2, 0]}, {"edge": 9, "factor": 0.5}], "faces": [7, 7]}
+```
+
+A cut along `points`: a vertex, a place along an edge (from its first vertex, strictly inside), or a
+place inside a face in the object's own space. `faces[i]` is the face the part from point i to i+1
+crosses, which has to hold both. Parts from a vertex or edge to a vertex or edge, through any face
+points between them, split their face; parts ending inside a face cut nothing.
+
+```json
+{"op": "subdivide", "object": "…", "count": 4, "data": "<sha256>", "file": "…", "cuts": 1}
+{"op": "merge", "object": "…", "count": 3, "data": "<sha256>", "file": "…", "at": "vertex", "vertex": 7}
+{"op": "merge_by_distance", "object": "…", "count": 8, "data": "<sha256>", "file": "…", "distance": 0.0001}
+{"op": "delete", "object": "…", "component": "faces", "count": 2, "data": "<sha256>", "file": "…"}
+{"op": "dissolve", "object": "…", "component": "edges", "count": 2, "data": "<sha256>", "file": "…"}
+```
+
+- `subdivide` splits the edges into `cuts + 1` equal parts and fills between them as Blender's
+  Subdivide does (grid fill, straight cuts).
+- `merge` welds the vertices into one: at their `center`, each connected group at its own center
+  (`collapse`), or onto `vertex`, one of them. The vertex that stays is the lowest numbered, or
+  `vertex`.
+- `merge_by_distance` goes through the vertices in order: each one not merged yet takes every other
+  one not merged yet within `distance` of it (in the object's space, at most that far) and stays
+  where it is. Only vertices of the set merge.
+- `delete` removes the components and what's built on them; `dissolve` removes them and joins what
+  was around them (Blender's defaults: vertices without splitting faces, edges taking their
+  vertices along, faces keeping theirs).
+
+New data follows BMesh's interpolation, as in edit mode: a vertex made on an edge takes UVs, vertex
+group weights and shape key places in proportion along it, and the halves of a split edge keep its
+seam and sharp marks; a vertex made inside a face takes them from the face's corners; new edges
+across faces are neither seams nor sharp. A merged vertex keeps its own weights, every face corner
+keeps its UVs, and at a center it sits at the middle of the merged vertices in every shape key too;
+an edge merged onto another is a seam, or sharp, when either was. Loop cuts, knife cuts and
+subdivisions keep the numbers of what was there and add new components after; the others number
+what's left again, in order.
+
+Each change of topology reports:
+
+```json
+{"object": "…", "counts": {"vertices": 46, "edges": 85, "faces": 40}, "added": {"vertices": 10, "edges": 25, "faces": 15},
+ "select": {"component": "edges", "indices": [60, 61]}, "merged": 2, "merged_into": [[1, 0], [7, 0]]}
+```
+
+`select` is what the editor selects afterwards: a loop cut's new loops, a knife cut's new edges,
+subdivided edges with what's between them, merged vertices, a dissolve's joined faces, nothing after
+a delete. It's left out past 2,000,000. Merges say how many vertices went and, for the first 1,000,
+which vertex each became.
 
 Every edit in a list is checked against the scene before any is made.
 
@@ -303,6 +379,10 @@ data              the arrays, each starting on a multiple of 16 bytes
 | `groupIndex`, `groupWeight` | u16, f32 | weights | Each weight's vertex group (by the object's list) and value |
 
 ## Versions
+
+Bridge 2.4.0 added changes of topology: `loop_cut`, `knife`, `subdivide`, `merge`,
+`merge_by_distance`, `delete` and `dissolve`, `reports` in `apply`'s answer, and the codes
+`op_unsupported` and `op_failed`. The host asks for 2.4.0 or later for Model Edit.
 
 Bridge 2.3.1 turns off Blender's save versions in the worker, so `save` over an existing file
 leaves no `.blend1` beside it. Only the worker's own process changes; preferences aren't saved.

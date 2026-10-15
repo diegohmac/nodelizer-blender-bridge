@@ -134,6 +134,51 @@ class RequestTests(unittest.TestCase):
         with self.assertRaises(wp.RequestError):
             wp.check_ops([missing])
 
+    def test_takes_changes_of_topology(self):
+        file = {"count": 2, "data": "b" * 64, "file": os.path.join(EDITS, "ops", "b" * 64 + ".bin")}
+        ops = [
+            {"op": "loop_cut", "object": "a", "edges": [4, 1, 9], "cuts": 2, "factor": -0.5},
+            {"op": "subdivide", "object": "a", **file, "cuts": 3},
+            {
+                "op": "knife",
+                "object": "a",
+                "points": [{"vertex": 1}, {"face": 2, "at": [0, 1, 2]}, {"edge": 5, "factor": 0.3}],
+                "faces": [2, 2],
+            },
+            {"op": "merge", "object": "a", **file, "at": "vertex", "vertex": 4},
+            {"op": "merge", "object": "a", **file, "at": "collapse"},
+            {"op": "merge_by_distance", "object": "a", **file, "distance": 0.001},
+            {"op": "delete", "object": "a", **file, "component": "faces"},
+            {"op": "dissolve", "object": "a", **file, "component": "edges"},
+        ]
+        checked = wp.check_ops(ops)
+        self.assertEqual(checked[0]["factor"], -0.5)
+        self.assertEqual(checked[1]["component"], "edges")
+        self.assertEqual(checked[3]["component"], "vertices")
+        self.assertEqual(checked[2]["points"][1], {"face": 2, "at": [0.0, 1.0, 2.0]})
+        for op in (
+            {**ops[0], "edges": [4, 4]},
+            {**ops[0], "edges": []},
+            {**ops[0], "cuts": 0},
+            {**ops[0], "cuts": wp.MAX_CUTS + 1},
+            {**ops[0], "factor": 1},
+            {**ops[0], "extra": 1},
+            {**ops[2], "faces": [2]},
+            {**ops[2], "points": [{"vertex": 1}, {"edge": 5, "factor": 1}], "faces": [2]},
+            {**ops[2], "points": [{"vertex": 1}, {"vertex": 2, "face": 1}], "faces": [2]},
+            {**ops[3], "at": "first"},
+            {**ops[4], "vertex": 4},
+            {k: v for k, v in ops[3].items() if k != "vertex"},
+            {**ops[5], "distance": -1},
+            {**ops[6], "component": "loops"},
+            {k: v for k, v in ops[6].items() if k != "component"},
+            {**ops[1], "count": 0},
+        ):
+            with self.assertRaises(wp.RequestError, msg=json.dumps(op)) as caught:
+                wp.check_ops([op])
+            self.assertEqual(caught.exception.code, "op_invalid")
+            self.assertEqual(caught.exception.index, 0)
+
     def test_bad_lines_keep_their_id_when_they_have_one(self):
         with self.assertRaises(wp.RequestError):
             wp.decode(b"not json\n")
@@ -205,6 +250,23 @@ class MeshFileTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 meshfile.read_vertex_positions(damaged)
+
+    def test_reads_component_files_as_the_host_writes_them(self):
+        data = meshfile.pack(
+            [("indices", "u32", array.array("I", [3, 8, 9]))],
+            {"kind": "components", "component": "edges", "counts": {"items": 3}},
+        )
+        component, count, indices = meshfile.read_components(data)
+        self.assertEqual((component, count), ("edges", 3))
+        self.assertEqual(list(struct.unpack("<3I", indices)), [3, 8, 9])
+        for header in (
+            {"kind": "vertices", "component": "edges", "counts": {"items": 3}},
+            {"kind": "components", "component": "loops", "counts": {"items": 3}},
+            {"kind": "components", "component": "edges", "counts": {"items": 2}},
+        ):
+            damaged = meshfile.pack([("indices", "u32", array.array("I", [3, 8, 9]))], header)
+            with self.assertRaises(ValueError):
+                meshfile.read_components(damaged)
 
     def test_refuses_unknown_types(self):
         with self.assertRaises(ValueError):
