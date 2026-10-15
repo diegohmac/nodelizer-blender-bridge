@@ -97,9 +97,22 @@ def _bones(obj) -> list[dict]:
                 "parent": bone.parent.name if bone.parent else None,
                 "head": _round(bone.head_local),
                 "tail": _round(bone.tail_local),
+                # Its rest place, turn (roll included) and length in armature space, which posing
+                # works from, and whether it deforms meshes.
+                "matrix": _matrix(bone.matrix_local),
+                "deform": bool(bone.use_deform),
             }
         )
     return bones
+
+
+def _modifier(modifier) -> dict:
+    """A modifier's name and type, and the object it works with, like an Armature's armature."""
+    entry = {"name": modifier.name, "type": modifier.type}
+    target = getattr(modifier, "object", None)
+    if isinstance(target, bpy.types.Object) and target.get(ID_PROP):
+        entry["object"] = target[ID_PROP]
+    return entry
 
 
 def _get(collection, attribute: str, count: int, dtype, width: int = 1):
@@ -322,7 +335,7 @@ class Snapshots:
                 "matrixWorld": _matrix(obj.matrix_world),
                 "dimensions": _round(obj.dimensions),
                 "visible": bool(obj.visible_get()),
-                "modifiers": [{"name": m.name, "type": m.type} for m in obj.modifiers],
+                "modifiers": [_modifier(m) for m in obj.modifiers],
             }
             if obj.rotation_mode not in ("QUATERNION", "AXIS_ANGLE"):
                 entry["euler"] = _round(obj.rotation_euler)
@@ -337,6 +350,9 @@ class Snapshots:
                     slot.material.name if slot.material else None for slot in obj.material_slots
                 ]
                 entry["vertexGroups"] = [group.name for group in obj.vertex_groups]
+                entry["lockedVertexGroups"] = [
+                    group.name for group in obj.vertex_groups if group.lock_weight
+                ]
             if obj.type == "ARMATURE" and obj.data is not None:
                 entry["bones"] = _bones(obj)
             objects.append(entry)

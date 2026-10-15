@@ -179,6 +179,35 @@ class RequestTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "op_invalid")
             self.assertEqual(caught.exception.index, 0)
 
+    def test_takes_weight_edits(self):
+        file = {"count": 4, "data": "c" * 64, "file": os.path.join(EDITS, "ops", "c" * 64 + ".bin")}
+        ops = [
+            {"op": "add_vertex_group", "object": "a", "name": "Arm.L"},
+            {"op": "set_weights", "object": "a", "groups": ["Arm.L", "Spine"], **file},
+            {"op": "lock_vertex_groups", "object": "a", "groups": ["Spine"], "locked": True},
+        ]
+        checked = wp.check_ops(ops)
+        self.assertEqual(checked[1]["groups"], ["Arm.L", "Spine"])
+        self.assertEqual(checked[2]["locked"], True)
+        for op in (
+            {**ops[0], "name": ""},
+            {**ops[0], "name": "x" * 64},
+            {**ops[0], "name": "é" * 32},
+            {**ops[0], "name": "a\0b"},
+            {**ops[0], "extra": 1},
+            {**ops[1], "groups": []},
+            {**ops[1], "groups": ["Spine", "Spine"]},
+            {**ops[1], "groups": ["x"] * (wp.MAX_GROUPS + 1)},
+            {**ops[1], "count": 0},
+            {**ops[1], "file": os.path.join(os.sep, "tmp", "x.bin")},
+            {**ops[2], "locked": 1},
+            {k: v for k, v in ops[2].items() if k != "locked"},
+        ):
+            with self.assertRaises(wp.RequestError, msg=json.dumps(op)) as caught:
+                wp.check_ops([op])
+            self.assertEqual(caught.exception.code, "op_invalid")
+            self.assertEqual(caught.exception.index, 0)
+
     def test_bad_lines_keep_their_id_when_they_have_one(self):
         with self.assertRaises(wp.RequestError):
             wp.decode(b"not json\n")
@@ -267,6 +296,38 @@ class MeshFileTests(unittest.TestCase):
             damaged = meshfile.pack([("indices", "u32", array.array("I", [3, 8, 9]))], header)
             with self.assertRaises(ValueError):
                 meshfile.read_components(damaged)
+
+    def test_reads_weight_files_as_the_host_writes_them(self):
+        data = meshfile.pack(
+            [
+                ("vertices", "u32", array.array("I", [1, 1, 4])),
+                ("groups", "u16", array.array("H", [0, 2, 1])),
+                ("weights", "f32", array.array("f", [0.5, 0.25, 1])),
+            ],
+            {"kind": "weights", "counts": {"weights": 3}},
+        )
+        count, vertices, groups, weights = meshfile.read_weights(data)
+        self.assertEqual(count, 3)
+        self.assertEqual(list(struct.unpack("<3I", vertices)), [1, 1, 4])
+        self.assertEqual(list(struct.unpack("<3H", groups)), [0, 2, 1])
+        self.assertEqual(list(struct.unpack("<3f", weights)), [0.5, 0.25, 1])
+        for damaged in (
+            meshfile.pack(
+                [("vertices", "u32", array.array("I", [1]))],
+                {"kind": "weights", "counts": {"weights": 1}},
+            ),
+            meshfile.pack(
+                [
+                    ("vertices", "u32", array.array("I", [1])),
+                    ("groups", "u32", array.array("I", [0])),
+                    ("weights", "f32", array.array("f", [1])),
+                ],
+                {"kind": "weights", "counts": {"weights": 1}},
+            ),
+            data.replace(b'"weights":3', b'"weights":2'),
+        ):
+            with self.assertRaises(ValueError):
+                meshfile.read_weights(damaged)
 
     def test_refuses_unknown_types(self):
         with self.assertRaises(ValueError):

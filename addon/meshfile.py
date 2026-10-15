@@ -142,3 +142,30 @@ def read_components(data: bytes) -> tuple[str, int, memoryview]:
     ):
         raise ValueError("not a file of components")
     return component, count, indices[1]
+
+
+def read_weights(data: bytes) -> tuple[int, memoryview, memoryview, memoryview]:
+    """A weight edit's file, as the host writes it: how many weights, and for each its vertex (u32),
+    its group by place in the edit's list of names (u16) and its value (f32), as raw little-endian
+    bytes, ordered by vertex and then group."""
+    header, arrays = read(data)
+    count = (header.get("counts") or {}).get("weights")
+    vertices = arrays.get("vertices")
+    groups = arrays.get("groups")
+    weights = arrays.get("weights")
+    if (
+        header.get("kind") != "weights"
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or vertices is None
+        or groups is None
+        or weights is None
+        or vertices[0] != "u32"
+        or groups[0] != "u16"
+        or weights[0] != "f32"
+        or len(vertices[1]) != count * 4
+        or len(groups[1]) != count * 2
+        or len(weights[1]) != count * 4
+    ):
+        raise ValueError("not a file of weights")
+    return count, vertices[1], groups[1], weights[1]

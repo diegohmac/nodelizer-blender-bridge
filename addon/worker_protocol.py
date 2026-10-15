@@ -32,7 +32,9 @@ _SHA = re.compile(r"^[a-f0-9]{64}$")
 STEPS = ("load", "import", "apply", "save", "snapshot", "export")
 # Edits that change a mesh's vertices, edges and faces, not just where its vertices are.
 TOPOLOGY = ("loop_cut", "subdivide", "knife", "merge", "merge_by_distance", "delete", "dissolve")
-OPS = ("set_transform", "set_vertices", *TOPOLOGY)
+# Edits of vertex groups: weights, new groups and locks.
+WEIGHTS = ("set_weights", "add_vertex_group", "lock_vertex_groups")
+OPS = ("set_transform", "set_vertices", *TOPOLOGY, *WEIGHTS)
 # The most vertices one edit moves, and the most components one edit names in its file.
 MAX_VERTICES = 16_000_000
 # The most edges a loop cut's ring has, and the most points a knife cut has.
@@ -40,6 +42,9 @@ MAX_RING = 100_000
 MAX_KNIFE_POINTS = 20_000
 MAX_CUTS = 64
 COMPONENTS = ("vertices", "edges", "faces")
+# The most vertex groups one edit names; Blender's names are at most 63 bytes.
+MAX_GROUPS = 1024
+MAX_GROUP_NAME = 63
 # Which components each edit over a set takes; delete and dissolve take any of them.
 _SET_OF = {"subdivide": ("edges",), "merge": ("vertices",), "merge_by_distance": ("vertices",)}
 SOURCE_EXTENSIONS = (".glb", ".fbx", ".obj", ".stl", ".usdz")
@@ -158,6 +163,46 @@ def _knife_point(point) -> dict:
     raise RequestError("a knife point is a vertex, an edge and factor, or a face and place", "op_invalid")
 
 
+def _group_name(value) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\0" in value
+        or len(value.encode("utf-8")) > MAX_GROUP_NAME
+    ):
+        raise RequestError("a vertex group name is 1 to 63 bytes", "op_invalid")
+    return value
+
+
+def _group_names(value) -> list[str]:
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_GROUPS:
+        raise RequestError(f"groups needs 1 to {MAX_GROUPS} names", "op_invalid")
+    names = [_group_name(name) for name in value]
+    if len(set(names)) != len(names):
+        raise RequestError("groups names a group twice", "op_invalid")
+    return names
+
+
+def _check_weights(op) -> dict:
+    kind = op["op"]
+    out = {"op": kind, "object": _object(op)}
+    if kind == "set_weights":
+        _fields(op, {"op", "object", "groups", "count", "data", "file"})
+        out["groups"] = _group_names(op["groups"])
+        out.update(_component_file(op))
+        return out
+    if kind == "add_vertex_group":
+        _fields(op, {"op", "object", "name"})
+        out["name"] = _group_name(op["name"])
+        return out
+    _fields(op, {"op", "object", "groups", "locked"})
+    out["groups"] = _group_names(op["groups"])
+    if not isinstance(op["locked"], bool):
+        raise RequestError("locked is true or false", "op_invalid")
+    out["locked"] = op["locked"]
+    return out
+
+
 def _check_topology(op) -> dict:
     kind = op["op"]
     out = {"op": kind, "object": _object(op)}
@@ -225,6 +270,8 @@ def check_op(op, index: int) -> dict:
     try:
         if op["op"] in TOPOLOGY:
             return _check_topology(op)
+        if op["op"] in WEIGHTS:
+            return _check_weights(op)
         if op["op"] == "set_transform":
             allowed = {"op", "object", "location", "rotation", "scale"}
             if set(op) - allowed:

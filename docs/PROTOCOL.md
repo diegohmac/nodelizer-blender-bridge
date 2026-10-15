@@ -312,6 +312,29 @@ subdivided edges with what's between them, merged vertices, a dissolve's joined 
 a delete. It's left out past 2,000,000. Merges say how many vertices went and, for the first 1,000,
 which vertex each became.
 
+Three edit vertex groups. Groups belong to the object, by name; their weights belong to the mesh.
+
+```json
+{"op": "add_vertex_group", "object": "…", "name": "Arm.L"}
+{"op": "set_weights", "object": "…", "groups": ["Arm.L", "Spine"], "count": 3, "data": "<sha256>", "file": "…"}
+{"op": "lock_vertex_groups", "object": "…", "groups": ["Spine"], "locked": true}
+```
+
+- `add_vertex_group` adds an empty group at the end of the object's list. A name is 1 to 63 bytes
+  of UTF-8 and mustn't be taken.
+- `set_weights` sets weights: each listed weight is set, putting its vertex in the group when it
+  wasn't, and every other weight stays as it was. `groups` names the object's groups (1 to 1,024,
+  each once; a group added earlier in the same list counts). The file is in the mesh file's layout
+  with header `{"kind": "weights", "counts": {"weights": count}}` and three arrays: `vertices`
+  (u32), `groups` (u16, a place in `groups`) and `weights` (f32, 0 to 1), ordered by vertex and
+  then group, each pair once. The worker checks its SHA-256, every vertex and every value. The mesh
+  gets a new mesh file, and every object using it is in `changed`.
+- `lock_vertex_groups` locks or unlocks groups (Blender's lock, kept in the .blend). Nothing stops a
+  weight edit from changing a locked group: the host keeps them as they are.
+
+Neither `add_vertex_group` nor `lock_vertex_groups` names components, so they may follow a change
+of topology on the same mesh.
+
 Every edit in a list is checked against the scene before any is made.
 
 ### Objects and snapshots
@@ -333,8 +356,10 @@ column):
     "parent": "1b8208f6608e", "parentType": "OBJECT", "parentBone": null,
     "location": [0, 0, 0], "rotationMode": "QUATERNION", "rotation": [1, 0, 0, 0], "scale": [1, 1, 1],
     "matrixBasis": [16 numbers], "matrixParentInverse": [16 numbers], "matrixWorld": [16 numbers],
-    "dimensions": [0.4, 0.4, 1.7], "visible": true, "modifiers": [{"name": "Armature", "type": "ARMATURE"}],
-    "mesh": "<sha256>", "materials": ["Skin"], "vertexGroups": ["Hips", "Spine", "Head"]
+    "dimensions": [0.4, 0.4, 1.7], "visible": true,
+    "modifiers": [{"name": "Armature", "type": "ARMATURE", "object": "1b8208f6608e"}],
+    "mesh": "<sha256>", "materials": ["Skin"], "vertexGroups": ["Hips", "Spine", "Head"],
+    "lockedVertexGroups": ["Hips"]
   }],
   "meshes": {"<sha256>": {"vertices": 12, "edges": 30, "faces": 20, "loops": 60, "triangles": 20,
              "uvLayers": [], "shapeKeys": [], "bounds": {"min": [...], "max": [...]}, "bytes": 3216}},
@@ -343,7 +368,11 @@ column):
 ```
 
 `rotation` is always a quaternion; `euler` (radians) is added for Euler modes and `delta` when the
-delta transform isn't nothing. Armatures list their `bones` with heads and tails in armature space.
+delta transform isn't nothing. A modifier working with another object, like an Armature with its
+armature, names it in `object`. Mesh objects list their vertex groups in order, and which of them
+are locked. Armatures list their `bones`: `name`, `parent`, `head` and `tail` in armature space,
+`matrix`, the bone's rest matrix in armature space (Blender's `matrix_local`, roll included), and
+`deform`, whether it deforms meshes.
 `appearance/<sha256>.glb` holds every material the scene's objects use, one triangle each, so
 materials and textures travel without the geometry.
 
@@ -379,6 +408,10 @@ data              the arrays, each starting on a multiple of 16 bytes
 | `groupIndex`, `groupWeight` | u16, f32 | weights | Each weight's vertex group (by the object's list) and value |
 
 ## Versions
+
+Bridge 2.5.0 added vertex group edits (`set_weights`, `add_vertex_group`, `lock_vertex_groups`)
+and, in snapshots, bones' rest matrices and deform flags, locked groups and the object a modifier
+works with. The host asks for 2.5.0 or later for Model Edit.
 
 Bridge 2.4.0 added changes of topology: `loop_cut`, `knife`, `subdivide`, `merge`,
 `merge_by_distance`, `delete` and `dissolve`, `reports` in `apply`'s answer, and the codes
