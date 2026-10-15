@@ -191,7 +191,7 @@ plain (no `..`) and inside a folder named `blender`.
 | `load` | `key`, `blend` (a .blend, or null for an empty scene), `replay` (lists of edits) | Opens the .blend and applies each list of edits in turn. |
 | `import` | `key`, `source` (`.glb`, `.fbx`, `.obj`, `.stl` or `.usdz`) | Brings a model into an empty scene, packs its textures and gives every object a new id. |
 | `apply` | `from`, `to`, `ops` | Applies edits to the scene held as `from`; refused unless that's the one held. |
-| `save` | `blend` | Saves a copy of the scene there, the file written under another name first. |
+| `save` | `blend` | Saves a copy of the scene there, the file written under another name first, with no `.blend1` backup. |
 | `snapshot` | `folder`, `name` (`r<n>`), `appearance` (`"export"`, a SHA-256 to keep, or null) | Writes `<name>.json`, the mesh files it names that aren't there yet, and with `"export"`, the appearance GLB. |
 | `export` | `path`, `format` (`glb` or `fbx`) | Exports the scene as the bridge's own exports do. |
 
@@ -303,6 +303,9 @@ data              the arrays, each starting on a multiple of 16 bytes
 | `groupIndex`, `groupWeight` | u16, f32 | weights | Each weight's vertex group (by the object's list) and value |
 
 ## Versions
+
+Bridge 2.3.1 turns off Blender's save versions in the worker, so `save` over an existing file
+leaves no `.blend1` beside it. Only the worker's own process changes; preferences aren't saved.
 
 Bridge 2.3.0 added the `set_vertices` edit. The host asks for 2.3.0 or later for Model Edit; the
 worker protocol number didn't change.

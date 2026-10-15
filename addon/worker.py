@@ -199,6 +199,10 @@ def execute(argv) -> int:
     if argv:
         print("usage: blender --background --command nodelizer_worker", file=sys.stderr)
         return 2
+    # Saving over the node's .blend mustn't leave a .blend1 beside it each time: the host keeps
+    # the scene's history itself. Only this background process changes; it never saves preferences,
+    # so Blender opened by a person keeps its backups.
+    bpy.context.preferences.filepaths.save_version = 0
     worker = Worker()
     worker.reset()
     send(
