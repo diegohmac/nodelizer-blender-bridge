@@ -59,7 +59,66 @@ def digest(data: bytes) -> str:
 
 def read_header(data: bytes) -> dict:
     """The header of a mesh file, for tests and checks."""
-    magic, version, length = struct.unpack_from("<4sII", data, 0)
-    if magic != MAGIC or version != VERSION:
+    if len(data) < 12:
         raise ValueError("not a mesh file")
-    return json.loads(data[12 : 12 + length].decode("utf-8"))
+    magic, version, length = struct.unpack_from("<4sII", data, 0)
+    if magic != MAGIC or version != VERSION or 12 + length > len(data):
+        raise ValueError("not a mesh file")
+    try:
+        header = json.loads(data[12 : 12 + length].decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ValueError("the header is damaged") from error
+    if not isinstance(header, dict) or not isinstance(header.get("arrays"), list):
+        raise ValueError("the header is damaged")
+    return header
+
+
+def read(data: bytes) -> tuple[dict, dict[str, tuple[str, memoryview]]]:
+    """A file's header and its arrays' raw little-endian bytes, by name, each checked to fit."""
+    header = read_header(data)
+    _magic, _version, length = struct.unpack_from("<4sII", data, 0)
+    start = 12 + length + _pad(12 + length)
+    view = memoryview(data)
+    arrays = {}
+    for entry in header["arrays"]:
+        if not isinstance(entry, dict):
+            raise ValueError("a damaged array")
+        name, kind = entry.get("name"), entry.get("type")
+        offset, count = entry.get("offset"), entry.get("length")
+        if (
+            not isinstance(name, str)
+            or kind not in SIZES
+            or not isinstance(offset, int)
+            or not isinstance(count, int)
+            or offset < 0
+            or count < 0
+            or offset % ALIGN
+        ):
+            raise ValueError("a damaged array")
+        end = start + offset + count * SIZES[kind]
+        if end > len(data):
+            raise ValueError("the file is cut short")
+        arrays[name] = (kind, view[start + offset : end])
+    return header, arrays
+
+
+def read_vertex_positions(data: bytes) -> tuple[int, memoryview, memoryview]:
+    """A vertex edit's file, as the host writes it: how many vertices, their indices (u32) and
+    their new places (three f32 each), as raw little-endian bytes."""
+    header, arrays = read(data)
+    count = (header.get("counts") or {}).get("vertices")
+    indices = arrays.get("indices")
+    positions = arrays.get("positions")
+    if (
+        header.get("kind") != "vertices"
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or indices is None
+        or positions is None
+        or indices[0] != "u32"
+        or positions[0] != "f32"
+        or len(indices[1]) != count * 4
+        or len(positions[1]) != count * 12
+    ):
+        raise ValueError("not a file of vertex positions")
+    return count, indices[1], positions[1]

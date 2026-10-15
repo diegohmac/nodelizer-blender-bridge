@@ -106,6 +106,34 @@ class RequestTests(unittest.TestCase):
         with self.assertRaises(wp.RequestError):
             wp.check_ops([{"op": "set_transform", "object": "a", "rotation": [0, 0, 0, 0]}])
 
+    def test_takes_vertex_edits_that_name_their_file(self):
+        op = {
+            "op": "set_vertices",
+            "object": "a1b2c3d4e5f6",
+            "count": 3,
+            "data": "a" * 64,
+            "file": os.path.join(EDITS, "ops", "a" * 64 + ".bin"),
+        }
+        self.assertEqual(wp.check_ops([op]), [op])
+        for change in (
+            {"count": 0},
+            {"count": True},
+            {"count": wp.MAX_VERTICES + 1},
+            {"data": "nope"},
+            {"file": os.path.join(os.sep, "tmp", "x.bin")},
+            {"file": os.path.join(EDITS, "ops", "x.blend")},
+            {"positions": [0, 0, 0]},
+        ):
+            with self.assertRaises(wp.RequestError, msg=json.dumps(change)) as caught:
+                first = {"op": "set_transform", "object": "b", "scale": [1, 1, 1]}
+                wp.check_ops([first, {**op, **change}])
+            self.assertEqual(caught.exception.code, "op_invalid")
+            self.assertEqual(caught.exception.index, 1)
+        missing = dict(op)
+        del missing["data"]
+        with self.assertRaises(wp.RequestError):
+            wp.check_ops([missing])
+
     def test_bad_lines_keep_their_id_when_they_have_one(self):
         with self.assertRaises(wp.RequestError):
             wp.decode(b"not json\n")
@@ -147,6 +175,36 @@ class MeshFileTests(unittest.TestCase):
         first = meshfile.pack(arrays, {"counts": {"vertices": 1}})
         second = meshfile.pack(arrays, {"counts": {"vertices": 1}})
         self.assertEqual(meshfile.digest(first), meshfile.digest(second))
+
+    def test_reads_vertex_files_as_the_host_writes_them(self):
+        data = meshfile.pack(
+            [
+                ("indices", "u32", array.array("I", [2, 7])),
+                ("positions", "f32", array.array("f", [1, 2, 3, 4, 5, 6])),
+            ],
+            {"kind": "vertices", "counts": {"vertices": 2}},
+        )
+        count, indices, positions = meshfile.read_vertex_positions(data)
+        self.assertEqual(count, 2)
+        self.assertEqual(list(struct.unpack("<2I", indices)), [2, 7])
+        self.assertEqual(list(struct.unpack("<6f", positions)), [1, 2, 3, 4, 5, 6])
+        for damaged in (
+            data[:40],
+            b"NOPE" + data[4:],
+            meshfile.pack(
+                [("indices", "u32", array.array("I", [2]))],
+                {"kind": "vertices", "counts": {"vertices": 1}},
+            ),
+            meshfile.pack(
+                [
+                    ("indices", "u32", array.array("I", [2, 7])),
+                    ("positions", "f32", array.array("f", [1, 2, 3])),
+                ],
+                {"kind": "vertices", "counts": {"vertices": 2}},
+            ),
+        ):
+            with self.assertRaises(ValueError):
+                meshfile.read_vertex_positions(damaged)
 
     def test_refuses_unknown_types(self):
         with self.assertRaises(ValueError):

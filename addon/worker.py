@@ -109,9 +109,11 @@ class Worker:
         if self.key is None or self.key != step["from"]:
             raise Failure("not_loaded", "another scene is loaded")
         try:
-            changed = edits.apply(step["ops"])
+            changed, meshes = edits.apply(step["ops"])
         except RequestError as error:
             raise Failure(error.code, str(error), error.index) from error
+        # Moved vertices make a new mesh file; unmoved meshes keep theirs.
+        self.snapshots.forget(meshes)
         self.key = step["to"]
         return {"key": self.key, "changed": changed}
 

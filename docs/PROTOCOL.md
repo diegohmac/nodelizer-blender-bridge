@@ -211,7 +211,7 @@ edit is never saved by a later request. Edits refused before anything changed (`
 
 ### Edits
 
-There's no edit that runs code. Version 1 has one:
+There's no edit that runs code. There are two:
 
 ```json
 {"op": "set_transform", "object": "1b8208f6608e", "location": [0, 0, 1], "rotation": [1, 0, 0, 0], "scale": [1, 1, 1]}
@@ -220,8 +220,23 @@ There's no edit that runs code. Version 1 has one:
 `object` is the object's id. `location`, `rotation` (a quaternion, w first, normalized by the
 worker) and `scale` are its own values, relative to its parent and without its delta transform;
 each is optional, but one is needed. The rotation is written in the object's own rotation mode,
-taking the Euler angles nearest the current ones. Numbers must be finite and within 10⁷. Every
-edit in a list is checked against the scene before any is made.
+taking the Euler angles nearest the current ones. Numbers must be finite and within 10⁷.
+
+```json
+{"op": "set_vertices", "object": "2a520b2b8f0b", "count": 2, "data": "<sha256>", "file": "/…/blender/.edits/<scene>/ops/<sha256>.bin"}
+```
+
+Moves some of a mesh object's vertices to new places in its own space, in the mesh's rest state.
+`file` is in the mesh file's layout (below) with header `{"kind": "vertices", "counts":
+{"vertices": count}}` and two arrays: `indices` (u32, strictly increasing) and `positions` (f32, 3
+per vertex). `data` is the file's SHA-256, which the worker checks, as it checks that every index is
+a vertex of the mesh and every number is finite and within 10⁷. With shape keys, Blender evaluates
+the basis key rather than the vertices, so the basis moves too and keys relative to it move by the
+same amount, as leaving edit mode does in Blender. Every object using the mesh changes with it, and
+`changed` lists them all. UVs, materials, vertex groups, seams and sharp edges stay as they were; a
+moved mesh gets a new mesh file in the next snapshot.
+
+Every edit in a list is checked against the scene before any is made.
 
 ### Objects and snapshots
 
@@ -288,6 +303,9 @@ data              the arrays, each starting on a multiple of 16 bytes
 | `groupIndex`, `groupWeight` | u16, f32 | weights | Each weight's vertex group (by the object's list) and value |
 
 ## Versions
+
+Bridge 2.3.0 added the `set_vertices` edit. The host asks for 2.3.0 or later for Model Edit; the
+worker protocol number didn't change.
 
 Bridge 2.2.0 added the worker. The host asks for 2.2.0 or later only for Model Edit, so older
 bridges keep working for everything else.

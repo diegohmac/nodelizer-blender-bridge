@@ -32,8 +32,8 @@ picks up where you left off, with modifiers, rigs, materials and everything else
 
 A **Model Edit** node uses it without opening Blender at all: Nodelizer starts
 `blender --background --command nodelizer_worker`, which keeps the node's scene loaded, applies the
-moves Nodelizer sends (only fixed, checked edits, never code), saves the `.blend`, and writes what
-the scene looks like so Nodelizer can draw it in its own viewport.
+object and vertex moves Nodelizer sends (only fixed, checked edits, never code), saves the
+`.blend`, and writes what the scene looks like so Nodelizer can draw it in its own viewport.
 
 A **Convert** node set to Blender uses it too, without opening a window: Nodelizer runs
 `blender --background --command nodelizer_convert <job folder>`, which brings one model into an

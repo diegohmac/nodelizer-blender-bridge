@@ -30,7 +30,9 @@ _SNAPSHOT_NAME = re.compile(r"^r[0-9]{1,9}$")
 _SHA = re.compile(r"^[a-f0-9]{64}$")
 
 STEPS = ("load", "import", "apply", "save", "snapshot", "export")
-OPS = ("set_transform",)
+OPS = ("set_transform", "set_vertices")
+# The most vertices one edit moves.
+MAX_VERTICES = 16_000_000
 SOURCE_EXTENSIONS = (".glb", ".fbx", ".obj", ".stl", ".usdz")
 OUTPUT_FORMATS = ("glb", "fbx")
 
@@ -109,6 +111,28 @@ def check_op(op, index: int) -> dict:
             if len(out) == 2:
                 raise RequestError("nothing to change", "op_invalid")
             return out
+        if op["op"] == "set_vertices":
+            if set(op) != {"op", "object", "count", "data", "file"}:
+                raise RequestError("set_vertices takes object, count, data and file", "op_invalid")
+            if not isinstance(op["object"], str) or not _ID.match(op["object"]):
+                raise RequestError("bad object id", "op_invalid")
+            count = op["count"]
+            whole = isinstance(count, int) and not isinstance(count, bool)
+            if not whole or not 1 <= count <= MAX_VERTICES:
+                raise RequestError("bad vertex count", "op_invalid")
+            if not isinstance(op["data"], str) or not _SHA.match(op["data"]):
+                raise RequestError("bad vertex file hash", "op_invalid")
+            try:
+                file = _path(op["file"], (".bin",), "file")
+            except RequestError as error:
+                raise RequestError(str(error), "op_invalid") from error
+            return {
+                "op": "set_vertices",
+                "object": op["object"],
+                "count": count,
+                "data": op["data"],
+                "file": file,
+            }
     except RequestError as error:
         error.index = index
         raise
