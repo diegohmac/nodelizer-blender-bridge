@@ -5,7 +5,8 @@ Edits that change a mesh's topology are in topology.py.
 
 Vertex groups belong to the object, by name; their weights belong to the mesh, by the object's
 group index. A weight edit sets each weight it lists, putting the vertex in the group when it wasn't,
-and leaves every other weight as it was. UV layers belong to the mesh; their edits are in uvs.py."""
+and leaves every other weight as it was. UV layers and seams belong to the mesh; their edits,
+unwrapping and packing among them, are in uvs.py."""
 
 from __future__ import annotations
 
@@ -213,7 +214,7 @@ def _set_weights(obj, op: dict, vertices: np.ndarray, groups: np.ndarray, weight
 def apply(ops: list[dict]) -> tuple[list[str], list[str], list]:
     """Makes the edits. Returns the ids of the objects they changed, the names of the meshes that
     changed, whose files have to be written again, and for each edit what it reports: what to
-    select after a change of topology, or None."""
+    select after a change of topology, the UVs an unwrap or a pack made, or None."""
     objects, prepared = check(ops)
     changed = []
     meshes = []
@@ -238,7 +239,11 @@ def apply(ops: list[dict]) -> tuple[list[str], list[str], list]:
             elif op["op"] == "set_weights":
                 _set_weights(obj, op, *ready)
             elif op["op"] in UVS:
-                uvs.apply(mesh, op, ready)
+                try:
+                    report = uvs.apply(obj, op, ready)
+                except RequestError as error:
+                    error.index = index
+                    raise
             else:
                 try:
                     report = topology.apply(mesh, op, ready)

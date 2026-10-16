@@ -239,6 +239,69 @@ class RequestTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "op_invalid")
             self.assertEqual(caught.exception.index, 0)
 
+    def test_takes_seams_unwraps_and_packs(self):
+        file = {"count": 4, "data": "d" * 64, "file": os.path.join(EDITS, "ops", "d" * 64 + ".bin")}
+        out = os.path.join(EDITS, "ops")
+        ops = [
+            {"op": "mark_seams", "object": "a", "seam": True, **file},
+            {
+                "op": "unwrap_uvs",
+                "object": "a",
+                "layer": "UVMap",
+                "method": "ANGLE_BASED",
+                "fill_holes": True,
+                "correct_aspect": True,
+                "margin": 0.01,
+                "out": out,
+                **file,
+            },
+            {
+                "op": "pack_uvs",
+                "object": "a",
+                "layer": "UVMap",
+                "rotate": True,
+                "rotate_method": "ANY",
+                "scale": True,
+                "margin": 0,
+                "pin": True,
+                "pin_method": "LOCKED",
+                "shape": "CONCAVE",
+                "merge_overlap": False,
+                "tile": [1, 2],
+                "out": out,
+                **file,
+            },
+        ]
+        checked = wp.check_ops(ops)
+        self.assertEqual(checked[0]["seam"], True)
+        self.assertNotIn("keep_bounds", checked[1])
+        self.assertEqual(checked[1]["out"], out)
+        self.assertEqual(checked[2]["tile"], [1, 2])
+        self.assertEqual(checked[2]["margin"], 0.0)
+        self.assertEqual(wp.check_ops([{**ops[1], "keep_bounds": True}])[0]["keep_bounds"], True)
+        for op in (
+            {**ops[0], "seam": 1},
+            {**ops[0], "layer": "UVMap"},
+            {**ops[1], "method": "SMART"},
+            {**ops[1], "margin": 0.6},
+            {**ops[1], "margin": True},
+            {**ops[1], "fill_holes": "yes"},
+            {**ops[1], "out": os.path.join(os.sep, "tmp", "ops")},
+            {k: v for k, v in ops[1].items() if k != "out"},
+            {**ops[1], "rotate": True},
+            {**ops[2], "tile": [10, 0]},
+            {**ops[2], "tile": [0, -1]},
+            {**ops[2], "tile": [0]},
+            {**ops[2], "pin_method": "PINNED"},
+            {**ops[2], "shape": "ROUND"},
+            {**ops[2], "rotate_method": "SOME"},
+            {k: v for k, v in ops[2].items() if k != "merge_overlap"},
+        ):
+            with self.assertRaises(wp.RequestError, msg=json.dumps(op)) as caught:
+                wp.check_ops([op])
+            self.assertEqual(caught.exception.code, "op_invalid")
+            self.assertEqual(caught.exception.index, 0)
+
     def test_bad_lines_keep_their_id_when_they_have_one(self):
         with self.assertRaises(wp.RequestError):
             wp.decode(b"not json\n")

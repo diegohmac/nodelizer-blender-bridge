@@ -200,7 +200,7 @@ edit is never saved by a later request. Edits refused before anything changed (`
 `op_invalid`, `op_unsupported`) leave it as it was.
 
 `apply` answers `{"key", "changed", "reports"}`: the ids of the objects the edits changed, and for
-each edit, null or, for a change of topology, what it did (see below).
+each edit, null or, for a change of topology, an unwrap or a pack, what it did (see below).
 
 | Code | Meaning |
 | --- | --- |
@@ -366,6 +366,47 @@ can have different UVs in each face around it without the mesh changing.
 the same mesh. `set_uvs` and `pin_uvs` name corners, which a change of topology numbers anew, like
 any edit naming components.
 
+One marks seams, and two work a layout out with Blender's own operators. Seams belong to the mesh's
+edges, so every object using it changes with it.
+
+```json
+{"op": "mark_seams", "object": "…", "seam": true, "count": 3, "data": "<sha256>", "file": "…"}
+{"op": "unwrap_uvs", "object": "…", "layer": "UVMap", "method": "ANGLE_BASED", "fill_holes": true,
+ "correct_aspect": true, "margin": 0.01, "keep_bounds": false, "count": 3, "data": "<sha256>",
+ "file": "…", "out": "<project>/blender/.edits/<scene>/ops"}
+{"op": "pack_uvs", "object": "…", "layer": "UVMap", "rotate": true, "rotate_method": "ANY",
+ "scale": true, "margin": 0.01, "pin": true, "pin_method": "LOCKED", "shape": "CONCAVE",
+ "merge_overlap": false, "tile": [0, 0], "count": 3, "data": "<sha256>", "file": "…", "out": "…"}
+```
+
+- `mark_seams` marks (`seam: true`) or clears the seam on some edges. The file is a components file
+  whose `component` is `edges`.
+- `unwrap_uvs` is Blender's Unwrap (`uv.unwrap`) on some faces of a layer: their file is a
+  components file whose `component` is `faces`. `method` is `ANGLE_BASED`, `CONFORMAL` or
+  `MINIMUM_STRETCH`; `margin` (0 to 0.5) is room between islands as a share of the tile
+  (`margin_method` `FRACTION`); `keep_bounds` (optional, false) keeps the result in the box the
+  faces' UVs had (`use_original_bounds`). Seams and the edge of the faces given cut islands apart,
+  pinned corners stay exactly where they are, and other faces keep their UVs.
+- `pack_uvs` is Blender's Pack Islands (`uv.pack_islands`) on the islands of some faces, into the
+  UDIM tile `tile`, `[u, v]` with u from 0 to 9 and v from 0 to 99 (`[0, 0]` is 1001): `rotate` and
+  `rotate_method` (`ANY`, `CARDINAL`, `AXIS_ALIGNED`), `scale` (scale islands to fill the tile),
+  `margin` as for unwrapping, `merge_overlap`, `shape` (`CONCAVE`, `CONVEX`, `AABB`) and, with
+  `pin`, `pin_method` (`LOCKED`, `SCALE`, `ROTATION`, `ROTATION_SCALE`) for islands holding a pinned
+  corner. Blender packs into the first tile when no image editor says which, so for another tile
+  the worker moves the faces' UVs by `-tile` first and back after; corners packing left alone keep
+  their UVs exactly. Blender packs around a locked island wherever it is, so the host should leave
+  out locked islands outside the target tile, which stay where they are anyway.
+
+Both run on a copy of the object and its mesh made for the purpose, with only the faces given
+selected, and removed after: the scene's own mesh never goes through edit mode, and the scene's
+selection, active object and tool settings stay as they were. The corners whose UVs came out
+different are set on the mesh and written, in a `set_uvs` file (above), to `<out>/<sha256>.bin`,
+named by its SHA-256. `out` is a folder in a project's `blender` folder. Each reports
+`{"object", "uvs": {"layer", "count", "data"}}`: how many corners changed and the file's SHA-256,
+left out when none did. The host keeps the file and logs a `set_uvs` in place of the unwrap or
+pack, so replaying history makes exactly these UVs whatever Blender does later. An operator that
+doesn't finish fails with `op_failed`.
+
 Every edit in a list is checked against the scene before any is made.
 
 ### Objects and snapshots
@@ -441,6 +482,9 @@ data              the arrays, each starting on a multiple of 16 bytes
 | `groupIndex`, `groupWeight` | u16, f32 | weights | Each weight's vertex group (by the object's list) and value |
 
 ## Versions
+
+Bridge 2.7.0 added `mark_seams`, `unwrap_uvs` and `pack_uvs`, whose reports carry the UVs they made
+in a `set_uvs` file. The host asks for 2.7.0 or later for Model Edit.
 
 Bridge 2.6.0 added UV layer edits (`set_uvs`, `pin_uvs`, `add_uv_layer`, `set_uv_layer`) and, in
 mesh files, each layer's pins (`uvPin<n>`, and `"pins": true` in its `uvLayers` entry) once it has

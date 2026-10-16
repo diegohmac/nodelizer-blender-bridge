@@ -34,8 +34,13 @@ STEPS = ("load", "import", "apply", "save", "snapshot", "export")
 TOPOLOGY = ("loop_cut", "subdivide", "knife", "merge", "merge_by_distance", "delete", "dissolve")
 # Edits of vertex groups: weights, new groups and locks.
 WEIGHTS = ("set_weights", "add_vertex_group", "lock_vertex_groups")
-# Edits of UV layers: corners' UVs and pins, new layers, and which layer is active or rendered.
-UVS = ("set_uvs", "pin_uvs", "add_uv_layer", "set_uv_layer")
+# Edits that work a mesh's UV layout out in Blender: unwrapping and packing. Each writes the UVs it
+# made to a file in the folder it names, so the host can keep them as a set_uvs and replay them
+# exactly.
+SOLVES = ("unwrap_uvs", "pack_uvs")
+# Edits of UV layers: corners' UVs and pins, new layers, which layer is active or rendered, seams,
+# and the layouts Blender works out.
+UVS = ("set_uvs", "pin_uvs", "add_uv_layer", "set_uv_layer", "mark_seams", *SOLVES)
 OPS = ("set_transform", "set_vertices", *TOPOLOGY, *WEIGHTS, *UVS)
 # Edits that name no components, so they may follow a change of topology on the same mesh.
 UNNUMBERED = ("set_transform", "add_vertex_group", "lock_vertex_groups", "add_uv_layer", "set_uv_layer")
@@ -52,6 +57,16 @@ MAX_GROUP_NAME = 63
 # Blender keeps a UV layer's name to 63 bytes too, and a mesh to 8 UV layers.
 MAX_UV_NAME = 63
 MAX_UV_LAYERS = 8
+# Blender's ways to unwrap, to keep pinned islands while packing, to turn and to outline islands.
+UNWRAP_METHODS = ("ANGLE_BASED", "CONFORMAL", "MINIMUM_STRETCH")
+PIN_METHODS = ("LOCKED", "SCALE", "ROTATION", "ROTATION_SCALE")
+ROTATE_METHODS = ("ANY", "CARDINAL", "AXIS_ALIGNED")
+SHAPE_METHODS = ("CONCAVE", "CONVEX", "AABB")
+# Room left between islands, as a share of the tile.
+MAX_MARGIN = 0.5
+# UDIM tiles: 10 across (U 0 to 9) and up to 100 up (V 0 to 99), 1001 the first.
+MAX_TILE_U = 9
+MAX_TILE_V = 99
 # Which components each edit over a set takes; delete and dissolve take any of them.
 _SET_OF = {"subdivide": ("edges",), "merge": ("vertices",), "merge_by_distance": ("vertices",)}
 SOURCE_EXTENSIONS = (".glb", ".fbx", ".obj", ".stl", ".usdz")
@@ -221,9 +236,70 @@ def _uv_name(value, what: str = "a UV layer name") -> str:
     return value
 
 
-def _check_uvs(op) -> dict:
+def _flag(op, name: str) -> bool:
+    if not isinstance(op[name], bool):
+        raise RequestError(f"{name} is true or false", "op_invalid")
+    return op[name]
+
+
+def _choice(op, name: str, choices: tuple[str, ...]) -> str:
+    if op[name] not in choices:
+        raise RequestError(f"{name} is one of {', '.join(choices)}", "op_invalid")
+    return op[name]
+
+
+def _check_solve(op) -> dict:
+    """An unwrap or a pack: the layer, the faces it works on, its settings, and the folder its
+    result goes to."""
     kind = op["op"]
     out = {"op": kind, "object": _object(op)}
+    shared = {"op", "object", "layer", "margin", "count", "data", "file", "out"}
+    if kind == "unwrap_uvs":
+        _fields(op, shared | {"method", "fill_holes", "correct_aspect"}, {"keep_bounds"})
+        out["method"] = _choice(op, "method", UNWRAP_METHODS)
+        out["fill_holes"] = _flag(op, "fill_holes")
+        out["correct_aspect"] = _flag(op, "correct_aspect")
+        if "keep_bounds" in op:
+            out["keep_bounds"] = _flag(op, "keep_bounds")
+    else:
+        extra = {"rotate", "rotate_method", "scale", "pin", "pin_method", "shape", "merge_overlap", "tile"}
+        _fields(op, shared | extra)
+        out["rotate"] = _flag(op, "rotate")
+        out["rotate_method"] = _choice(op, "rotate_method", ROTATE_METHODS)
+        out["scale"] = _flag(op, "scale")
+        out["pin"] = _flag(op, "pin")
+        out["pin_method"] = _choice(op, "pin_method", PIN_METHODS)
+        out["shape"] = _choice(op, "shape", SHAPE_METHODS)
+        out["merge_overlap"] = _flag(op, "merge_overlap")
+        tile = op["tile"]
+        if not isinstance(tile, list) or len(tile) != 2:
+            raise RequestError("tile is [u, v]", "op_invalid")
+        out["tile"] = [_whole(tile[0], 0, MAX_TILE_U, "tile u"), _whole(tile[1], 0, MAX_TILE_V, "tile v")]
+    out["layer"] = _uv_name(op["layer"])
+    margin = op["margin"]
+    if isinstance(margin, bool) or not isinstance(margin, (int, float)):
+        raise RequestError("margin needs a number", "op_invalid")
+    if not math.isfinite(margin) or not 0 <= margin <= MAX_MARGIN:
+        raise RequestError("margin is out of range", "op_invalid")
+    out["margin"] = float(margin)
+    out.update(_component_file(op))
+    try:
+        out["out"] = _folder(op["out"], "out")
+    except RequestError as error:
+        raise RequestError(str(error), "op_invalid") from error
+    return out
+
+
+def _check_uvs(op) -> dict:
+    kind = op["op"]
+    if kind in SOLVES:
+        return _check_solve(op)
+    out = {"op": kind, "object": _object(op)}
+    if kind == "mark_seams":
+        _fields(op, {"op", "object", "seam", "count", "data", "file"})
+        out["seam"] = _flag(op, "seam")
+        out.update(_component_file(op))
+        return out
     if kind == "set_uvs":
         _fields(op, {"op", "object", "layer", "count", "data", "file"})
         out["layer"] = _uv_name(op["layer"])
