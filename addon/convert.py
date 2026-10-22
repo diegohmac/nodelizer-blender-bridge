@@ -23,6 +23,7 @@ from dataclasses import dataclass
 import bpy
 
 from . import export
+from . import session as sessions
 
 COMMAND = "nodelizer_convert"
 SCHEMA = 1
@@ -67,7 +68,7 @@ def load(folder: str) -> Job:
     if not _FOLDER.match(os.path.basename(folder)) or not os.path.isdir(folder):
         raise JobError("not a job folder")
     path = os.path.join(folder, "job.json")
-    if not os.path.isfile(path) or os.path.getsize(path) > _MAX_JSON:
+    if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) > _MAX_JSON:
         raise JobError("job.json is missing or too large")
     with open(path, encoding="utf-8") as handle:
         try:
@@ -84,7 +85,7 @@ def load(folder: str) -> Job:
         raise JobError("unknown format")
     job = Job(folder=folder, input=source, format=fmt)
     # A link pointing out of the folder isn't the host's file.
-    if os.path.commonpath([os.path.realpath(job.input_path), folder]) != folder:
+    if not sessions.inside(job.input_path, folder):
         raise JobError("the input leaves the job folder")
     return job
 
@@ -96,13 +97,13 @@ def _clear():
     bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=False, do_recursive=True)
 
 
-def _import(path: str):
+def _import(path: str, folder: str):
+    """Brings the model at `path` into the scene. Its textures may only come from `folder`, where
+    the host put it."""
     extension = os.path.splitext(path)[1].lower()
+    before = export.file_data()
     if extension == ".glb":
-        options = export._options(
-            bpy.ops.import_scene.gltf, bone_heuristic="TEMPERANCE", disable_bone_shape=True
-        )
-        result = bpy.ops.import_scene.gltf(filepath=path, **options)
+        result = export.import_gltf(path)
     elif extension == ".fbx":
         result = bpy.ops.import_scene.fbx(filepath=path)
     elif extension == ".obj":
@@ -113,6 +114,7 @@ def _import(path: str):
         result = bpy.ops.wm.usd_import(filepath=path)
     else:
         raise ValueError("unknown model format")
+    export.keep_inside(folder, before, path)
     if "FINISHED" not in result or not bpy.data.objects:
         raise RuntimeError("the importer brought nothing in")
 
@@ -219,7 +221,7 @@ def execute(argv) -> int:
         _clear()
         if not os.path.isfile(job.input_path):
             raise RuntimeError(f"{job.input} is missing")
-        _import(job.input_path)
+        _import(job.input_path, job.folder)
     except Exception as error:  # Importers raise all kinds of errors on broken files.
         print(f"nodelizer_convert: import failed: {error}", file=sys.stderr)
         return 4

@@ -96,8 +96,8 @@ class Worker:
         _clear()
         self.snapshots.forget()
         try:
-            convert._import(step["source"])
-            bpy.ops.file.pack_all()
+            convert._import(step["source"], step["root"])
+            export.pack_files()
         except Exception as error:  # Importers raise all kinds of errors on broken files.
             raise Failure("import_failed", str(error)) from error
         scene_data.new_ids()

@@ -111,8 +111,11 @@ blender --background --addons bl_ext.user_default.nodelizer_bridge \
 
 Opens `blend`, or starts an empty scene when there's none, then brings in each model under
 `imports`: the collection tagged with its id is removed with its objects, and the model is
-imported into a new collection named `name` and tagged. Then it drops data nothing uses any more,
-packs textures into the file and saves `blend`. glTF files are imported with bones pointing at
+imported into a new collection named `name` and tagged. A texture or other file a model names
+outside the session folder is left out, whatever path the model gives it, unless a file of the same
+name, in any case, is among the model's own files (an OBJ's unpacked folder), which is used
+instead. One it names but came without stays missing rather than failing the import. Then it drops data nothing uses any
+more, packs textures into the file and saves `blend`. glTF files are imported with bones pointing at
 their children and without bone shapes. The host keeps a copy of an existing `.blend` before
 asking for an update.
 
@@ -143,7 +146,8 @@ Saves one model in another format, with no window and no socket. The host makes 
 
 The model comes into an empty scene and goes out as `result.<format>`. An OBJ goes out with its
 .mtl and its textures, packed or not, zipped together into `result.zip`. Nothing is read or
-written outside the job folder. Added in bridge 2.1.0; the protocol didn't change.
+written outside the job folder: a texture a model names outside it is left out, or comes from a
+file of the same name among the model's own files when there is one. Added in bridge 2.1.0; the protocol didn't change.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -189,7 +193,7 @@ plain (no `..`) and inside a folder named `blender`.
 | Step | Fields | What it does |
 | --- | --- | --- |
 | `load` | `key`, `blend` (a .blend, or null for an empty scene), `replay` (lists of edits) | Opens the .blend and applies each list of edits in turn. |
-| `import` | `key`, `source` (`.glb`, `.fbx`, `.obj`, `.stl` or `.usdz`) | Brings a model into an empty scene, packs its textures and gives every object a new id. |
+| `import` | `key`, `source`: `input.<glb\|fbx\|obj\|stl\|usdz>`, or the OBJ of a bundle unpacked into `input/`, at most three folders further down, in a folder inside a project's `blender` folder | Brings a model into an empty scene, packs its textures and gives every object a new id. Textures may only come from the folder holding `input`; any other file the model names is left out, or, for a texture, taken from a file of the same name in `input/` when there is one. |
 | `apply` | `from`, `to`, `ops` | Applies edits to the scene held as `from`; refused unless that's the one held. |
 | `save` | `blend` | Saves a copy of the scene there, the file written under another name first, with no `.blend1` backup. |
 | `snapshot` | `folder`, `name` (`r<n>`), `appearance` (`"export"`, a SHA-256 to keep, or null) | Writes `<name>.json`, the mesh files it names that aren't there yet, and with `"export"`, the appearance GLB. |
@@ -482,6 +486,10 @@ data              the arrays, each starting on a multiple of 16 bytes
 | `groupIndex`, `groupWeight` | u16, f32 | weights | Each weight's vertex group (by the object's list) and value |
 
 ## Versions
+
+Bridge 2.7.1 keeps a model's textures, and any other file it names, to the folder the host put the
+model in, taking a texture of the same name from an OBJ's own files in place of one outside, and
+lets a model import when a texture it names is missing. The protocol didn't change.
 
 Bridge 2.7.0 added `mark_seams`, `unwrap_uvs` and `pack_uvs`, whose reports carry the UVs they made
 in a `set_uvs` file. The host asks for 2.7.0 or later for Model Edit.

@@ -108,6 +108,30 @@ def _folder(value, what: str) -> str:
     return _path(value, (), what)
 
 
+# A model to bring in, as the host places it: `input.<ext>`, or an OBJ unpacked with its .mtl and
+# textures into `input/`, at most three folders down.
+_PLACED = re.compile(
+    r"^(input\.(glb|fbx|obj|stl|usdz)|input/([A-Za-z0-9 _.()-]{1,120}/){0,3}[A-Za-z0-9 _.()-]{1,120}\.obj)$",
+    re.IGNORECASE,
+)
+
+
+def _source(value) -> tuple[str, str]:
+    """A model to bring in, and the folder the host put it in, the only place its textures may
+    come from."""
+    source = _path(value, SOURCE_EXTENSIONS, "source")
+    parts = re.split(r"[\\/]+", source)
+    # The outermost match: an unpacked OBJ's own folders may be named `input` too.
+    for depth in range(5, 0, -1):
+        if len(parts) > depth + 1 and _PLACED.match("/".join(parts[-depth:])):
+            root = source
+            for _ in range(depth):
+                root = os.path.dirname(root)
+            if "blender" in re.split(r"[\\/]+", root)[:-1]:
+                return source, root
+    raise RequestError("source isn't a model the host placed")
+
+
 def _vector(value, size: int, what: str) -> list[float]:
     if not isinstance(value, list) or len(value) != size:
         raise RequestError(f"{what} needs {size} numbers", "op_invalid")
@@ -479,10 +503,12 @@ def check_step(step) -> dict:
             "replay": [check_ops(ops) for ops in replay],
         }
     if kind == "import":
+        source, root = _source(step.get("source"))
         return {
             "type": "import",
             "key": _key(step.get("key"), "key"),
-            "source": _path(step.get("source"), SOURCE_EXTENSIONS, "source"),
+            "source": source,
+            "root": root,
         }
     if kind == "apply":
         return {

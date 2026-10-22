@@ -69,6 +69,33 @@ class RequestTests(unittest.TestCase):
             with self.assertRaises(wp.RequestError, msg=blend):
                 wp.decode(run({"type": "save", "blend": blend}))
 
+    def test_an_import_knows_the_folder_its_model_is_in(self):
+        source = os.path.join(EDITS, "source")
+        for placed in (
+            ["input.glb"],
+            ["input", "knight.obj"],
+            # An unpacked OBJ's own folders may be named input too; its textures may be anywhere in it.
+            ["input", "input", "input.obj"],
+            ["input", "a", "b", "c", "knight.obj"],
+        ):
+            path = os.path.join(source, *placed)
+            step = wp.decode(run({"type": "import", "key": "n:1", "source": path}))["steps"][0]
+            self.assertEqual((step["source"], step["root"]), (path, source), msg=path)
+
+    def test_refuses_an_import_the_host_didnt_place(self):
+        for placed in (
+            ["hero.glb"],
+            ["input", "knight.fbx"],
+            ["input", "a", "b", "c", "d", "knight.obj"],
+            ["somewhere", "knight.obj"],
+        ):
+            path = os.path.join(EDITS, "source", *placed)
+            with self.assertRaises(wp.RequestError, msg=path):
+                wp.decode(run({"type": "import", "key": "n:1", "source": path}))
+        # The folder it's in must be inside a project's blender folder, not the blender folder.
+        with self.assertRaises(wp.RequestError):
+            wp.decode(run({"type": "import", "key": "n:1", "source": os.path.join(ROOT, "input.glb")}))
+
     def test_refuses_unknown_steps_ops_and_fields(self):
         cases = [
             {"type": "python", "code": "print(1)"},

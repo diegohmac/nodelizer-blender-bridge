@@ -126,6 +126,9 @@ def load(folder: str) -> Session:
             or ".." in item["file"]
         ):
             raise SessionError("bad import")
+        # A link pointing out of the folder isn't the host's file.
+        if not inside(os.path.join(folder, *item["file"].split("/")), folder):
+            raise SessionError("an import leaves the session folder")
         imports.append(Import(input=item["input"], name=_name(item.get("name")), file=item["file"]))
     blend = data.get("blend")
     if (
@@ -146,6 +149,16 @@ def load(folder: str) -> Session:
         imports=tuple(imports),
         frame=data.get("frame") is True,
     )
+
+
+def inside(path: str, folder: str) -> bool:
+    """Whether `path` is in `folder`, with links followed."""
+    path = os.path.normcase(os.path.realpath(path))
+    folder = os.path.normcase(os.path.realpath(folder))
+    try:
+        return os.path.commonpath([path, folder]) == folder
+    except ValueError:  # Another drive, on Windows.
+        return False
 
 
 def same_file(a: str, b: str) -> bool:

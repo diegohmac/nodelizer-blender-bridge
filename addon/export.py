@@ -8,9 +8,13 @@ moved into place once complete, so the host never reads a half-written file.
 from __future__ import annotations
 
 import os
+import re
+import sys
 from contextlib import contextmanager
 
 import bpy
+
+from . import session as sessions
 
 
 @contextmanager
@@ -118,6 +122,20 @@ def _options(operator, **wanted):
     return {key: value for key, value in wanted.items() if key in known}
 
 
+def import_gltf(path: str):
+    """Bones point at their children (TEMPERANCE) instead of Blender's default, which ignores an
+    armature's own scale and makes metre-long bones on centimetre rigs. Bone shapes are off: the
+    importer would draw every bone as a sphere it adds to the scene. Images stay unpacked, so
+    `keep_inside` sees the files they name; textures inside the GLB are packed either way."""
+    options = _options(
+        bpy.ops.import_scene.gltf,
+        bone_heuristic="TEMPERANCE",
+        disable_bone_shape=True,
+        import_pack_images=False,
+    )
+    return bpy.ops.import_scene.gltf(filepath=path, **options)
+
+
 def tagged_collections(input_id=None):
     """The collections holding the host's models, or the one holding `input_id`."""
     return [
@@ -137,11 +155,11 @@ def _remove_collection(collection):
     bpy.data.collections.remove(collection)
 
 
-def replace_input(path: str, input_id: str, name: str):
+def replace_input(path: str, input_id: str, name: str, folder: str):
     """Brings one of the host's models into its own collection, replacing the one it had before.
 
     Only that collection changes: everything else in the scene, including edits to other models,
-    stays as it is.
+    stays as it is. The model's textures may only come from `folder`, where the host put it.
     """
     for old in tagged_collections(input_id):
         _remove_collection(old)
@@ -151,28 +169,99 @@ def replace_input(path: str, input_id: str, name: str):
     layer = bpy.context.view_layer.layer_collection.children[collection.name]
     bpy.context.view_layer.active_layer_collection = layer
     extension = os.path.splitext(path)[1].lower()
+    before = file_data()
     if extension == ".glb":
-        # Bones point at their children (TEMPERANCE) instead of Blender's default, which ignores
-        # an armature's own scale and makes metre-long bones on centimetre rigs. Bone shapes are
-        # off: the importer would draw every bone as a sphere it adds to the scene.
-        options = _options(
-            bpy.ops.import_scene.gltf, bone_heuristic="TEMPERANCE", disable_bone_shape=True
-        )
-        result = bpy.ops.import_scene.gltf(filepath=path, **options)
+        result = import_gltf(path)
     elif extension == ".fbx":
         result = bpy.ops.import_scene.fbx(filepath=path)
     elif extension == ".obj":
         result = bpy.ops.wm.obj_import(filepath=path)
     else:
         raise ValueError("unknown model format")
+    keep_inside(folder, before, path)
     if "FINISHED" not in result or not collection.all_objects:
         raise RuntimeError("the importer brought nothing in")
     # Return to the scene's own collection, so whatever the person adds next goes there.
     bpy.context.view_layer.active_layer_collection = bpy.context.view_layer.layer_collection
 
 
+# Data that names a file on disk, and that Blender reads, packs into the .blend or copies into an
+# export.
+_FILE_DATA = ("images", "volumes", "sounds", "fonts", "movieclips", "cache_files")
+
+
+def file_data() -> set:
+    """Every datablock that names a file now, so `keep_inside` can tell what an import added."""
+    return {item.as_pointer() for kind in _FILE_DATA for item in getattr(bpy.data, kind, ())}
+
+
+def _packed(item) -> bool:
+    return getattr(item, "packed_file", None) is not None or bool(getattr(item, "packed_files", ()))
+
+
+def _same_name(name: str, folder: str, model: str):
+    """A file called `name`, in any case, among the model's own files: the folder an OBJ was
+    unpacked into, beside its .mtl and textures. A model in a file of its own has none."""
+    top = os.path.relpath(model, folder).split(os.sep)[0]
+    own = os.path.join(folder, top)
+    if top in ("", os.curdir, os.pardir) or not os.path.isdir(own):
+        return None
+    wanted = name.lower()
+    for parent, folders, files in os.walk(own):
+        folders.sort()
+        for file in sorted(files):
+            path = os.path.join(parent, file)
+            if file.lower() == wanted and sessions.inside(path, folder):
+                return path
+    return None
+
+
+def keep_inside(folder: str, before: set, model: str):
+    """Drops what an import of `model` brought in from files outside `folder`.
+
+    A model names its textures by path, and that path can be any file the person can read, such as
+    `/Users/me/.ssh/id_ed25519` or `../../Documents/scan.png`. Left in, Blender would pack it into
+    the .blend and copy it into exports. What the model carries inside itself is packed from its
+    own bytes, so it stays: no importer here packs from a path, once `import_gltf` asks glTF not to.
+
+    Exporters often write paths from the computer they ran on, and Blender reads such a file when
+    it's still there. A texture of the same name among the model's own files is used instead, as
+    Nodelizer's viewer does.
+    """
+    for kind in _FILE_DATA:
+        collection = getattr(bpy.data, kind, None)
+        if collection is None:
+            continue
+        for item in list(collection):
+            if item.as_pointer() in before or _packed(item):
+                continue
+            path = item.filepath
+            if not path or path == "<builtin>":
+                continue
+            if sessions.inside(bpy.path.abspath(path, library=item.library), folder):
+                continue
+            own = None
+            if kind == "images":
+                own = _same_name(re.split(r"[\\/]", path)[-1], folder, model)
+            if own is not None:
+                item.filepath = own
+                item.reload()
+                continue
+            print(f"nodelizer: left out {item.name!r}, a file outside the model's folder", file=sys.stderr)
+            collection.remove(item)
+
+
+def pack_files():
+    """Packs the files the scene uses into the .blend, since the model files the host passed are
+    temporary. A texture a model names but came without stays missing, as Blender shows it, instead
+    of failing the whole import."""
+    try:
+        bpy.ops.file.pack_all()
+    except RuntimeError as error:
+        print(f"nodelizer: {error}", file=sys.stderr)
+
+
 def finish_imports():
-    """Drops data the replaced models left unused and packs textures into the .blend, since the
-    model files the host passed are temporary."""
+    """Drops data the replaced models left unused and packs textures into the .blend."""
     bpy.data.orphans_purge(do_local_ids=True, do_linked_ids=False, do_recursive=True)
-    bpy.ops.file.pack_all()
+    pack_files()

@@ -41,7 +41,7 @@ def execute(argv) -> int:
             path = session.import_path(item)
             if not os.path.isfile(path):
                 raise RuntimeError(f"{item.file} is missing")
-            export.replace_input(path, item.input, item.name)
+            export.replace_input(path, item.input, item.name, session.folder)
         export.finish_imports()
     except Exception as error:  # Importers raise all kinds of errors on broken files.
         print(f"nodelizer_prepare: import failed: {error}", file=sys.stderr)

@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for the parts that run without Blender: session checks, the protocol and the socket."""
 
+import io
 import json
 import os
 import socket
 import sys
 import tempfile
 import threading
+import types
 import unittest
 import uuid
+from unittest import mock
 
 # The add-on's package imports bpy; these tests only need its pure Python modules.
 sys.path.insert(0, os.path.dirname(__file__))
@@ -16,7 +19,7 @@ import blender_stubs  # noqa: E402, F401
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from addon import convert, ipc, protocol  # noqa: E402
+from addon import convert, export, ipc, protocol  # noqa: E402
 from addon import session as sessions  # noqa: E402
 
 TOKEN = "t" * 43
@@ -88,6 +91,16 @@ class SessionTests(unittest.TestCase):
             folder, _ = make_session(self.root, imports=imports)
             with self.assertRaises(sessions.SessionError, msg=file):
                 sessions.load(folder)
+
+    def test_refuses_an_import_that_links_out_of_the_folder(self):
+        outside = os.path.join(self.root, "elsewhere.glb")
+        open(outside, "wb").close()
+        folder, _ = make_session(
+            self.root, imports=[{"input": "node-1", "name": "Hero", "file": "input-1.glb"}]
+        )
+        os.symlink(outside, os.path.join(folder, "input-1.glb"))
+        with self.assertRaises(sessions.SessionError):
+            sessions.load(folder)
 
     def test_refuses_odd_input_ids(self):
         for input_id in ("", "../x", "a b", "x" * 200):
@@ -222,6 +235,14 @@ class ConvertJobTests(unittest.TestCase):
             with self.assertRaises(convert.JobError, msg=str(overrides)):
                 convert.load(make_job(self.root, **overrides))
 
+    def test_refuses_a_linked_job_file(self):
+        folder = make_job(self.root)
+        elsewhere = os.path.join(self.root, "job.json")
+        os.replace(os.path.join(folder, "job.json"), elsewhere)
+        os.symlink(elsewhere, os.path.join(folder, "job.json"))
+        with self.assertRaises(convert.JobError):
+            convert.load(folder)
+
     def test_refuses_relative_and_odd_folders(self):
         with self.assertRaises(convert.JobError):
             convert.load("convert-x")
@@ -247,6 +268,130 @@ class BundleImportTests(unittest.TestCase):
             folder, _ = make_session(root, imports=[{"input": "a", "name": "Knight", "file": file}])
             with self.assertRaises(sessions.SessionError, msg=file):
                 sessions.load(folder)
+
+
+class Data(list):
+    """A stand-in for one of bpy.data's collections."""
+
+    def remove(self, item):
+        super().remove(item)
+
+
+def datablock(path, packed=False, name=None):
+    item = types.SimpleNamespace(
+        name=name or os.path.basename(path) or "image",
+        filepath=path,
+        library=None,
+        packed_file=object() if packed else None,
+        packed_files=[],
+        reloaded=False,
+    )
+    item.as_pointer = lambda: id(item)
+    item.reload = lambda: setattr(item, "reloaded", True)
+    return item
+
+
+def abspath(path, library=None):
+    return path
+
+
+class ModelFileTests(unittest.TestCase):
+    """What an import may bring in: only files inside the folder the host put the model in."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp())
+        self.folder = os.path.join(self.root, f"session-{uuid.uuid4()}")
+        os.makedirs(os.path.join(self.folder, "input-1", "textures"))
+        self.secret = os.path.join(self.root, "id_ed25519")
+        open(self.secret, "w").close()
+
+    def keep(self, images, before=(), model=None, **others):
+        data = types.SimpleNamespace(images=Data(images), **{k: Data(v) for k, v in others.items()})
+        with mock.patch.object(export.bpy, "data", data, create=True), mock.patch.object(
+            export.bpy, "path", types.SimpleNamespace(abspath=abspath), create=True
+        ), mock.patch("sys.stderr", io.StringIO()):
+            export.keep_inside(
+                self.folder,
+                {item.as_pointer() for item in before},
+                model or os.path.join(self.folder, "input-1", "model.obj"),
+            )
+        return data
+
+    def test_drops_textures_a_model_names_outside_its_folder(self):
+        inside = datablock(os.path.join(self.folder, "input-1", "textures", "wood.png"))
+        climbing = datablock(os.path.join(self.folder, "input-1", "..", "..", "id_ed25519"))
+        absolute = datablock(self.secret)
+        link = os.path.join(self.folder, "input-1", "textures", "link.png")
+        os.symlink(self.secret, link)
+        linked = datablock(link)
+        data = self.keep([inside, climbing, absolute, linked])
+        self.assertEqual(list(data.images), [inside])
+
+    def test_keeps_what_the_model_carries_and_what_was_there(self):
+        # A GLB's or FBX's own textures are packed from its bytes, whatever path they name.
+        embedded = datablock(os.path.join(self.folder, "..", "textures", "wood.png"), packed=True)
+        generated = datablock("")
+        earlier = datablock(os.path.join(self.root, "my texture.png"))
+        font = datablock("<builtin>")
+        data = self.keep([embedded, generated, earlier], before=[earlier], fonts=[font])
+        self.assertEqual(list(data.images), [embedded, generated, earlier])
+        self.assertEqual(list(data.fonts), [font])
+
+    def test_drops_other_files_a_model_names_outside_its_folder(self):
+        volume = datablock(os.path.join(self.root, "cloud.vdb"))
+        sound = datablock(self.secret)
+        data = self.keep([], volumes=[volume], sounds=[sound])
+        self.assertEqual((list(data.volumes), list(data.sounds)), ([], []))
+
+    def test_a_texture_named_from_another_computer_comes_from_the_models_own_files(self):
+        # Exporters write paths from the computer they ran on; the bundle carries the file.
+        own = os.path.join(self.folder, "input-1", "textures", "Wood.PNG")
+        open(own, "w").close()
+        original = os.path.join(self.root, "wood.png")
+        open(original, "w").close()
+        here = datablock(original)
+        windows = datablock("C:\\Users\\me\\Wood.png")
+        data = self.keep([here, windows])
+        self.assertEqual(list(data.images), [here, windows])
+        self.assertEqual((here.filepath, windows.filepath), (own, own))
+        self.assertTrue(here.reloaded and windows.reloaded)
+
+    def test_a_texture_of_the_same_name_must_be_the_models_own(self):
+        # Another model's files, and a link out of the folder, aren't this model's.
+        os.makedirs(os.path.join(self.folder, "input-2"))
+        open(os.path.join(self.folder, "input-2", "wood.png"), "w").close()
+        os.symlink(self.secret, os.path.join(self.folder, "input-1", "textures", "id_ed25519"))
+        single = os.path.join(self.folder, "input-3.glb")
+        open(single, "w").close()
+        wood = datablock(os.path.join(self.root, "wood.png"))
+        key = datablock(self.secret)
+        self.assertEqual(list(self.keep([wood, key]).images), [])
+        self.assertEqual(list(self.keep([datablock("/elsewhere/wood.png")], model=single).images), [])
+
+    def test_a_missing_texture_doesnt_fail_the_import(self):
+        def pack_all():
+            raise RuntimeError("Unable to pack file, source path 'wood.png' not found")
+
+        ops = types.SimpleNamespace(file=types.SimpleNamespace(pack_all=pack_all))
+        with mock.patch.object(export.bpy, "ops", ops, create=True), mock.patch(
+            "sys.stderr", io.StringIO()
+        ):
+            export.pack_files()
+
+    def test_gltf_leaves_its_images_for_the_check(self):
+        calls = []
+
+        def gltf(**options):
+            calls.append(options)
+            return {"FINISHED"}
+
+        known = ("filepath", "bone_heuristic", "disable_bone_shape", "import_pack_images")
+        rna = types.SimpleNamespace(properties=[types.SimpleNamespace(identifier=k) for k in known])
+        gltf.get_rna_type = lambda: rna
+        ops = types.SimpleNamespace(import_scene=types.SimpleNamespace(gltf=gltf))
+        with mock.patch.object(export.bpy, "ops", ops, create=True):
+            export.import_gltf("/tmp/input-1.glb")
+        self.assertIs(calls[0]["import_pack_images"], False)
 
 
 if __name__ == "__main__":
