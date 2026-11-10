@@ -182,22 +182,27 @@ Its first line is `{"type":"ready","protocol":1,"bridgeVersion","blenderVersion"
 | `{"id","type":"quit"}` | `{"id","ok":true}`, then it exits |
 
 `id` is 1 to 64 letters, digits, `-` and `_`. While a long step runs the worker may send
-`{"type":"progress","id","stage":"import"|"load"}`. `key` is the host's name for the scene the
+`{"type":"progress","id","stage":"import"|"load"}` (`import` for `assemble` and `assemble_parts`
+too). `key` is the host's name for the scene the
 worker holds after the request, or null when it holds none.
 
 ### Steps
 
 A `run` request is 1 to 16 steps, run in order until one fails. Every path must be absolute,
-plain (no `..`) and inside a folder named `blender`.
+plain (no `..`) and inside a folder named `blender`. Object ids the host gives are 12 lowercase
+hex characters, each given once in a step, and names 1 to 63 bytes. Parts and copies have no
+limit in number beyond the line's 4 MiB.
 
 | Step | Fields | What it does |
 | --- | --- | --- |
 | `load` | `key`, `blend` (a .blend, or null for an empty scene), `replay` (lists of edits) | Opens the .blend and applies each list of edits in turn. |
 | `import` | `key`, `source`: `input.<glb\|fbx\|obj\|stl\|usdz>`, or the OBJ of a bundle unpacked into `input/`, at most three folders further down, in a folder inside a project's `blender` folder | Brings a model into an empty scene, packs its textures and gives every object a new id. Textures may only come from the folder holding `input`; any other file the model names is left out, or, for a texture, taken from a file of the same name in `input/` when there is one. |
+| `assemble` | `key`, `parts` (`{"id","name","source"}`, `source` placed as for `import`), `copies` (`{"id","name","of"}`, optional) | Empties the scene and builds it from parts, for the host's Assemble node: each part's model comes in as `import` brings one in, with its textures kept to its own folder, and its meshes are joined into one mesh object with their transforms applied into the mesh, the origin moved to the middle of its bounds, at the origin with no rotation (quaternion mode) and a scale of 1, named `name` (and its mesh too) with the id `id`. Each copy is a linked duplicate of the part `of` names, sharing its mesh, at rest, with its own name and id. Answers `{"key", "objects"}`, the ids made. |
+| `assemble_parts` | `from`, `to`, `parts`, `copies` (at least one part or copy) | Adds parts and copies to the scene held as `from`, as `assemble` makes them, and leaves every other object as it is. A part whose id the scene has keeps its object and transform, and it and every object sharing its mesh take the new mesh; a copy whose id the scene has takes its source's mesh and keeps its transform. A copy may name any mesh object in the scene. Refused unless `from` is the one held. |
 | `apply` | `from`, `to`, `ops` | Applies edits to the scene held as `from`; refused unless that's the one held. |
 | `save` | `blend` | Saves a copy of the scene there, the file written under another name first, with no `.blend1` backup. |
 | `snapshot` | `folder`, `name` (`r<n>`), `appearance` (`"export"`, a SHA-256 to keep, or null) | Writes `<name>.json`, the mesh files it names that aren't there yet, and with `"export"`, the appearance GLB. |
-| `export` | `path`, `format` (`glb` or `fbx`) | Exports the scene as the bridge's own exports do. |
+| `export` | `path`, `format` (`glb` or `fbx`) | Exports the scene as the bridge's own exports do. An object whose scale turns it inside out (a negative determinant, like a mirrored copy) goes out as real geometry: a copy of its mesh with the mirroring applied and its faces turned to face out again, made for the export only, so the file holds no negative scale and the scene keeps its links. |
 
 When a step fails after the scene changed, the worker drops the scene (`key` null), so a half made
 edit is never saved by a later request. Edits refused before anything changed (`not_loaded`,
@@ -214,7 +219,7 @@ each edit, null or, for a change of topology, an unwrap or a pack, what it did (
 | `op_unsupported` | A change of topology on a mesh with a modifier that keeps data per vertex; `message` is the modifier's name as Blender shows it. |
 | `op_failed` | A change of topology that checked out couldn't be made, like a knife cut crossing itself inside a face. The scene is dropped. |
 | `load_failed`, `replay_failed` | The .blend couldn't be opened, or its edits replayed. |
-| `import_failed` | The model couldn't be brought in. |
+| `import_failed` | The model couldn't be brought in, or for `assemble` and `assemble_parts` a part, a part with no mesh, or a copy of an object the scene doesn't have; `index` says which, counting the parts and then the copies. |
 | `save_failed`, `snapshot_failed`, `export_failed` | Writing failed. |
 | `internal` | Anything else. |
 
@@ -416,7 +421,7 @@ Every edit in a list is checked against the scene before any is made.
 ### Objects and snapshots
 
 Each object carries a custom property `nodelizer_id`, 12 hex characters, which outlives renames.
-An imported scene gets random ids. A copied object carries its original's id; the later of the
+An imported scene gets random ids; an assembled one, the ids the host gave. A copied object carries its original's id; the later of the
 two by name gets one made from its own name, the same way on every computer.
 
 `<name>.json` describes the scene in Blender's coordinates (metres, Z up, matrices column by
@@ -486,6 +491,11 @@ data              the arrays, each starting on a multiple of 16 bytes
 | `groupIndex`, `groupWeight` | u16, f32 | weights | Each weight's vertex group (by the object's list) and value |
 
 ## Versions
+
+Bridge 2.8.0 added `assemble` and `assemble_parts`, which build a scene out of parts for the
+host's Assemble node, and exports write an object with a negative determinant as real geometry
+with its faces turned outward. The host asks for 2.8.0 or later for Model Edit; the worker
+protocol number didn't change.
 
 Bridge 2.7.1 keeps a model's textures, and any other file it names, to the folder the host put the
 model in, taking a texture of the same name from an OBJ's own files in place of one outside, and

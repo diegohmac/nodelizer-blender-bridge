@@ -16,6 +16,7 @@ sys.modules.setdefault("bpy", bpy)
 mathutils = types.ModuleType("mathutils")
 mathutils.Quaternion = object
 mathutils.Vector = object
+mathutils.Matrix = object
 mathutils.kdtree = types.ModuleType("mathutils.kdtree")
 sys.modules.setdefault("mathutils", mathutils)
 sys.modules.setdefault("mathutils.kdtree", mathutils.kdtree)

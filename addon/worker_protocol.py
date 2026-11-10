@@ -28,8 +28,12 @@ _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _KEY = re.compile(r"^[A-Za-z0-9:_.-]{1,200}$")
 _SNAPSHOT_NAME = re.compile(r"^r[0-9]{1,9}$")
 _SHA = re.compile(r"^[a-f0-9]{64}$")
+# The ids the host gives the objects it builds a scene of, as snapshots write them.
+_OBJECT_ID = re.compile(r"^[a-f0-9]{12}$")
+# Blender keeps an object's name to 63 bytes.
+MAX_OBJECT_NAME = 63
 
-STEPS = ("load", "import", "apply", "save", "snapshot", "export")
+STEPS = ("load", "import", "assemble", "assemble_parts", "apply", "save", "snapshot", "export")
 # Edits that change a mesh's vertices, edges and faces, not just where its vertices are.
 TOPOLOGY = ("loop_cut", "subdivide", "knife", "merge", "merge_by_distance", "delete", "dissolve")
 # Edits of vertex groups: weights, new groups and locks.
@@ -486,6 +490,65 @@ def _key(value, what: str) -> str:
     return value
 
 
+def _object_name(value) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\0" in value
+        or len(value.encode("utf-8")) > MAX_OBJECT_NAME
+    ):
+        raise RequestError("an object name is 1 to 63 bytes")
+    return value
+
+
+def _object_id(value, what: str) -> str:
+    if not isinstance(value, str) or not _OBJECT_ID.match(value):
+        raise RequestError(f"{what} isn't an object id")
+    return value
+
+
+def _parts(step, at_least: int) -> tuple[list[dict], list[dict]]:
+    """The parts a scene is built from, each a model the host placed, and the copies of them.
+
+    There is no cap on how many: the line's size is the only limit. Every id is new to the step,
+    and a copy names a part of the same step, or for `assemble_parts`, any object."""
+    parts, copies = step.get("parts"), step.get("copies", [])
+    if not isinstance(parts, list) or not isinstance(copies, list):
+        raise RequestError("parts and copies must be lists")
+    if len(parts) + len(copies) < at_least:
+        raise RequestError("nothing to bring in")
+    seen = set()
+    checked_parts = []
+    for part in parts:
+        if not isinstance(part, dict) or set(part) != {"id", "name", "source"}:
+            raise RequestError("a part takes id, name and source")
+        source, root = _source(part["source"])
+        checked_parts.append(
+            {
+                "id": _object_id(part["id"], "a part's id"),
+                "name": _object_name(part["name"]),
+                "source": source,
+                "root": root,
+            }
+        )
+    checked_copies = []
+    for copy in copies:
+        if not isinstance(copy, dict) or set(copy) != {"id", "name", "of"}:
+            raise RequestError("a copy takes id, name and of")
+        checked_copies.append(
+            {
+                "id": _object_id(copy["id"], "a copy's id"),
+                "name": _object_name(copy["name"]),
+                "of": _object_id(copy["of"], "a copy's source"),
+            }
+        )
+    for item in checked_parts + checked_copies:
+        if item["id"] in seen:
+            raise RequestError("an id is given twice")
+        seen.add(item["id"])
+    return checked_parts, checked_copies
+
+
 def check_step(step) -> dict:
     """One step of a request, with its paths and edits checked."""
     if not isinstance(step, dict) or step.get("type") not in STEPS:
@@ -509,6 +572,26 @@ def check_step(step) -> dict:
             "key": _key(step.get("key"), "key"),
             "source": source,
             "root": root,
+        }
+    if kind == "assemble":
+        parts, copies = _parts(step, 0)
+        named = {part["id"] for part in parts}
+        if any(copy["of"] not in named for copy in copies):
+            raise RequestError("a copy names a part that isn't brought in")
+        return {
+            "type": "assemble",
+            "key": _key(step.get("key"), "key"),
+            "parts": parts,
+            "copies": copies,
+        }
+    if kind == "assemble_parts":
+        parts, copies = _parts(step, 1)
+        return {
+            "type": "assemble_parts",
+            "from": _key(step.get("from"), "from"),
+            "to": _key(step.get("to"), "to"),
+            "parts": parts,
+            "copies": copies,
         }
     if kind == "apply":
         return {

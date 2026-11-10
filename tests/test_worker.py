@@ -96,6 +96,73 @@ class RequestTests(unittest.TestCase):
         with self.assertRaises(wp.RequestError):
             wp.decode(run({"type": "import", "key": "n:1", "source": os.path.join(ROOT, "input.glb")}))
 
+    def test_takes_a_scene_of_parts_and_copies(self):
+        source = lambda n, name="input.glb": os.path.join(EDITS, "source", str(n), name)
+        # No cap on parts: a large assembly is only limited by the line's size.
+        parts = [
+            {"id": f"{n:012x}", "name": f"Part {n}", "source": source(n)} for n in range(1, 201)
+        ]
+        copies = [{"id": "c0000000000a", "name": "Right arm", "of": parts[0]["id"]}]
+        request = wp.decode(
+            run(
+                {"type": "assemble", "key": "n:1:parts", "parts": parts, "copies": copies},
+                {"type": "snapshot", "folder": EDITS, "name": "r1", "appearance": "export"},
+            )
+        )
+        step = request["steps"][0]
+        self.assertEqual(len(step["parts"]), 200)
+        # Each part's textures may only come from the folder it was placed in.
+        self.assertEqual(step["parts"][0]["root"], os.path.join(EDITS, "source", "1"))
+        self.assertEqual(step["copies"], copies)
+        # An empty scene, for an assembly pressed before any model arrived.
+        empty = wp.decode(run({"type": "assemble", "key": "n:1:parts", "parts": []}))
+        self.assertEqual(empty["steps"][0]["copies"], [])
+        # Parts arriving later go into the scene held, and a copy may name any object in it.
+        later = wp.decode(
+            run(
+                {
+                    "type": "assemble_parts",
+                    "from": "n:2",
+                    "to": "n:3:parts",
+                    "parts": [parts[1]],
+                    "copies": [{"id": "c0000000000b", "name": "Wheel 4", "of": "0123456789ab"}],
+                }
+            )
+        )
+        self.assertEqual(later["steps"][0]["from"], "n:2")
+
+    def test_refuses_parts_that_dont_check_out(self):
+        good = {"id": "2a520b2b8f0b", "name": "Arm", "source": os.path.join(EDITS, "source", "1", "input.glb")}
+        cases = [
+            # A model the host didn't place, or outside a blender folder.
+            {"parts": [{**good, "source": os.path.join(EDITS, "source", "1", "arm.glb")}]},
+            {"parts": [{**good, "source": os.path.join(ROOT, "input.glb")}]},
+            {"parts": [{**good, "source": os.path.join(os.sep, "tmp", "source", "input.glb")}]},
+            # Ids are the scene's own: 12 hex characters, each given once.
+            {"parts": [{**good, "id": "Arm"}]},
+            {"parts": [good, {**good, "name": "Arm 2"}]},
+            {"parts": [good], "copies": [{"id": good["id"], "name": "Copy", "of": good["id"]}]},
+            # Names are Blender's: 1 to 63 bytes.
+            {"parts": [{**good, "name": ""}]},
+            {"parts": [{**good, "name": "é" * 32}]},
+            # Nothing else rides along.
+            {"parts": [{**good, "code": "print(1)"}]},
+            {"parts": [good], "copies": [{"id": "c0000000000a", "name": "Copy", "of": good["id"], "scale": -1}]},
+            {"parts": good},
+            # A copy of a part the step doesn't bring in.
+            {"parts": [good], "copies": [{"id": "c0000000000a", "name": "Copy", "of": "0123456789ab"}]},
+        ]
+        for fields in cases:
+            with self.assertRaises(wp.RequestError, msg=json.dumps(fields)):
+                wp.decode(run({"type": "assemble", "key": "n:1:parts", **fields}))
+        # Arrivals add something, and name the scene they go into.
+        with self.assertRaises(wp.RequestError):
+            wp.decode(run({"type": "assemble_parts", "from": "n:2", "to": "n:3", "parts": []}))
+        with self.assertRaises(wp.RequestError):
+            wp.decode(run({"type": "assemble_parts", "to": "n:3", "parts": [good]}))
+        with self.assertRaises(wp.RequestError):
+            wp.decode(run({"type": "assemble", "parts": [good]}))
+
     def test_refuses_unknown_steps_ops_and_fields(self):
         cases = [
             {"type": "python", "code": "print(1)"},
@@ -489,3 +556,73 @@ class MeshFileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _Matrix:
+    """A stand-in for mathutils.Matrix: only its determinant matters here."""
+
+    def __init__(self, determinant=1.0):
+        self.value = determinant
+
+    def copy(self):
+        return _Matrix(self.value)
+
+    def determinant(self):
+        return self.value
+
+    @staticmethod
+    def Identity(size):
+        return _Matrix(1.0)
+
+
+class _Mesh:
+    def __init__(self):
+        self.vertices = [object()]
+        self.users = 1
+        self.calls = []
+        self.name = ""
+
+    def transform(self, matrix, shape_keys=False):
+        self.calls.append(("transform", matrix.determinant()))
+
+    def flip_normals(self):
+        self.calls.append(("flip",))
+
+    def update(self):
+        pass
+
+
+class _Object:
+    def __init__(self, determinant):
+        self.type = "MESH"
+        self.data = _Mesh()
+        self.parent = None
+        self.modifiers = []
+        self.matrix_world = _Matrix(determinant)
+        self.name = "part"
+
+
+class AssembleTests(unittest.TestCase):
+    def joined(self, determinant):
+        from unittest import mock
+
+        from addon import assemble
+
+        obj = _Object(determinant)
+        with mock.patch.object(assemble, "Matrix", _Matrix), mock.patch.object(
+            assemble, "_centre", lambda mesh: None
+        ), mock.patch.object(assemble, "_remove", lambda objects: None):
+            assemble._joined([obj], "Arm")
+        return obj.data.calls
+
+    def test_a_mirroring_node_is_baked_with_its_faces_turned_out(self):
+        # A GLB node with a scale of -1 along X: baking it reverses the faces, so they're turned back.
+        calls = self.joined(-1.0)
+        self.assertIn(("transform", -1.0), calls)
+        self.assertEqual(calls.count(("flip",)), 1)
+        self.assertGreater(calls.index(("flip",)), calls.index(("transform", -1.0)))
+
+    def test_a_plain_node_is_baked_as_it_is(self):
+        calls = self.joined(1.0)
+        self.assertIn(("transform", 1.0), calls)
+        self.assertNotIn(("flip",), calls)

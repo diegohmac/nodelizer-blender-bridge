@@ -68,6 +68,7 @@ addon/
   convert.py             the nodelizer_convert command: save a model in another format
   worker.py              the nodelizer_worker command: a background scene for Nodelizer's editor
   worker_protocol.py     the worker's requests and answers, checked without Blender
+  assemble.py            scenes built from parts: each part one mesh object, copies sharing it
   edits.py               the edits the worker makes
   topology.py            loop cuts, knife cuts, merges and other changes of topology
   uvs.py                 UV layer edits: UVs, pins, new layers, seams, unwrapping, packing

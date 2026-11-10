@@ -17,7 +17,7 @@ import time
 
 import bpy
 
-from . import convert, edits, export, runtime, scene_data
+from . import assemble, convert, edits, export, runtime, scene_data
 from .worker_protocol import (
     MAX_LINE_BYTES,
     PROTOCOL,
@@ -28,7 +28,7 @@ from .worker_protocol import (
 )
 
 COMMAND = "nodelizer_worker"
-_MUTATING = ("load", "import", "apply")
+_MUTATING = ("load", "import", "assemble", "assemble_parts", "apply")
 # Failures that happen before a step changes anything.
 _UNTOUCHED = ("not_loaded", "op_invalid", "op_unsupported")
 
@@ -105,6 +105,30 @@ class Worker:
         self.key = step["key"]
         return {"key": self.key, "objects": len(scene_data.scene_objects())}
 
+    def _build(self, step: dict) -> list[str]:
+        try:
+            return assemble.build(step["parts"], step["copies"])
+        except assemble.PartError as error:
+            raise Failure("import_failed", str(error), error.index) from error
+
+    def _assemble(self, step: dict) -> dict:
+        _clear()
+        self.snapshots.forget()
+        self.key = None
+        changed = self._build(step)
+        self.key = step["key"]
+        return {"key": self.key, "objects": changed}
+
+    def _assemble_parts(self, step: dict) -> dict:
+        if self.key is None or self.key != step["from"]:
+            raise Failure("not_loaded", "another scene is loaded")
+        changed = self._build(step)
+        # Replaced meshes are new mesh data, so their files are written again; the others keep
+        # theirs.
+        self.snapshots.forget()
+        self.key = step["to"]
+        return {"key": self.key, "objects": changed}
+
     def _apply(self, step: dict) -> dict:
         if self.key is None or self.key != step["from"]:
             raise Failure("not_loaded", "another scene is loaded")
@@ -148,8 +172,9 @@ class Worker:
         started = time.monotonic()
         for index, step in enumerate(request["steps"]):
             kind = step["type"]
-            if kind in ("import", "load"):
-                send({"type": "progress", "id": request["id"], "stage": kind})
+            if kind in ("import", "load", "assemble", "assemble_parts"):
+                stage = "load" if kind == "load" else "import"
+                send({"type": "progress", "id": request["id"], "stage": stage})
             try:
                 results.append(getattr(self, f"_{kind}")(step))
                 mutated = mutated or kind in _MUTATING

@@ -13,6 +13,7 @@ import sys
 from contextlib import contextmanager
 
 import bpy
+from mathutils import Matrix
 
 from . import session as sessions
 
@@ -59,9 +60,48 @@ def _replace(temporary: str, final: str):
     os.replace(temporary, final)
 
 
+@contextmanager
+def outward():
+    """Objects whose scale turns them inside out (a negative determinant), like a mirrored copy
+    sharing its source's mesh, written as real geometry: for the export only, each takes a copy of
+    its mesh with the mirroring applied and its faces turned to face out again, and a scale that
+    no longer mirrors. Nothing downstream ever meets a negative scale, and the scene keeps its
+    links once the export is done."""
+    changed = []
+    try:
+        for obj in list(bpy.context.scene.objects):
+            if obj.type != "MESH" or obj.data is None or obj.matrix_world.determinant() >= 0:
+                continue
+            scale = tuple(obj.scale)
+            flips = [-1.0 if value < 0 else 1.0 for value in scale]
+            # A parent that mirrors is undone by mirroring the object along its own X as well.
+            parent = obj.matrix_world @ obj.matrix_basis.inverted_safe()
+            if parent.determinant() < 0:
+                flips[0] = -flips[0]
+            if flips[0] * flips[1] * flips[2] > 0:
+                continue
+            mesh = obj.data
+            real = mesh.copy()
+            real.transform(Matrix.Diagonal((*flips, 1.0)), shape_keys=True)
+            real.flip_normals()
+            real.update()
+            changed.append((obj, mesh, scale, real))
+            obj.data = real
+            obj.scale = tuple(value * flip for value, flip in zip(scale, flips))
+        bpy.context.view_layer.update()
+        yield
+    finally:
+        for obj, mesh, scale, real in changed:
+            obj.data = mesh
+            obj.scale = scale
+            if real.users == 0:
+                bpy.data.meshes.remove(real)
+        bpy.context.view_layer.update()
+
+
 def export_glb(path: str):
     temporary = path[: -len(".glb")] + ".partial.glb"
-    with object_mode():
+    with object_mode(), outward():
         bpy.ops.export_scene.gltf(
             filepath=temporary,
             export_format="GLB",
@@ -77,7 +117,7 @@ def export_glb(path: str):
 
 def export_fbx(path: str):
     temporary = path[: -len(".fbx")] + ".partial.fbx"
-    with object_mode():
+    with object_mode(), outward():
         bpy.ops.export_scene.fbx(
             filepath=temporary,
             use_selection=False,
