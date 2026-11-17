@@ -14,8 +14,16 @@ import bpy
 import numpy as np
 from mathutils import Quaternion
 
-from . import meshfile, scene_data, topology, uvs
-from .worker_protocol import MAX_COORDINATE, TOPOLOGY, UNNUMBERED, UVS, WEIGHTS, RequestError
+from . import meshfile, objects as scene_objects, scene_data, topology, uvs
+from .worker_protocol import (
+    MAX_COORDINATE,
+    OBJECTS,
+    TOPOLOGY,
+    UNNUMBERED,
+    UVS,
+    WEIGHTS,
+    RequestError,
+)
 
 
 def _vertex_positions(op: dict, obj) -> tuple[np.ndarray, np.ndarray]:
@@ -90,8 +98,10 @@ def _users(mesh) -> list:
 def check(ops: list[dict]) -> tuple[dict, list]:
     """The scene's objects by id and what each edit needs, once every edit fits the scene.
 
-    A change of topology numbers a mesh's components anew, so it has to be the last edit of its
-    mesh in a batch: anything after it would name components of a mesh it can't know yet."""
+    A change of topology numbers a mesh's components anew, so it has to be the last edit naming
+    components of its mesh in a batch: anything after it would name components of a mesh it can't
+    know yet. Joining, separating and remeshing number them anew too, and a join takes objects out
+    of the scene, which nothing after it may name."""
     objects = scene_data.by_id()
     prepared = []
     topologies: dict = {}
@@ -100,34 +110,76 @@ def check(ops: list[dict]) -> tuple[dict, list]:
     # leave them.
     groups: dict = {}
     layers: dict = {}
+    # Objects a join earlier in the batch took in, and meshes numbered anew by an edit that isn't
+    # their last to name components: a join, a remesh or a separation of loose pieces.
+    gone: set = set()
+    anew: set = set()
+    # Meshes a change of topology earlier in the batch leaves other than they're read now.
+    reshaped: set = set()
     for index, op in enumerate(ops):
         obj = objects.get(op["object"])
-        names_components = op["op"] not in UNNUMBERED
+        names_components = op["op"] not in UNNUMBERED and op.get("mode") != "loose"
         if obj is not None and names_components and obj.type == "MESH" and obj.data:
             last[obj.data.name_full] = index
+
+    def is_mesh(obj):
+        if obj.type != "MESH" or obj.data is None:
+            raise RequestError("not a mesh", "op_invalid")
+        return obj.data
+
+    def read(mesh):
+        """The mesh's topology as the edit will find it."""
+        if mesh.name_full in anew or mesh.name_full in reshaped:
+            raise RequestError("the mesh is made anew earlier in the list", "op_invalid")
+        if mesh.name_full not in topologies:
+            topologies[mesh.name_full] = topology.Topology(mesh)
+        return topologies[mesh.name_full]
+
     for index, op in enumerate(ops):
         obj = objects.get(op["object"])
         try:
-            if obj is None:
+            if obj is None or op["object"] in gone:
                 raise RequestError("unknown object", "op_invalid")
             if op["op"] in TOPOLOGY:
-                if obj.type != "MESH" or obj.data is None:
-                    raise RequestError("not a mesh", "op_invalid")
-                mesh = obj.data
+                mesh = is_mesh(obj)
                 if last[mesh.name_full] != index:
                     raise RequestError("a change of topology has to be its mesh's last edit", "op_invalid")
-                if mesh.name_full not in topologies:
-                    topologies[mesh.name_full] = topology.Topology(mesh)
-                prepared.append(topology.check(op, mesh, _users(mesh), topologies[mesh.name_full]))
+                prepared.append(topology.check(op, mesh, _users(mesh), read(mesh)))
+                reshaped.add(mesh.name_full)
+            elif op["op"] == "join":
+                if any(each in gone for each in op["objects"]):
+                    raise RequestError("unknown object", "op_invalid")
+                sources = scene_objects.check_join(op, objects)
+                for each in (obj, *sources):
+                    if last.get(each.data.name_full, -1) > index:
+                        raise RequestError("a join has to come after its meshes' edits", "op_invalid")
+                    anew.add(each.data.name_full)
+                gone.update(op["objects"])
+                prepared.append(sources)
+            elif op["op"] == "separate":
+                mesh = is_mesh(obj)
+                if last.get(mesh.name_full, -1) > index:
+                    raise RequestError("a separation has to be its mesh's last edit", "op_invalid")
+                prepared.append(scene_objects.check_separate(op, obj, read(mesh)))
+                anew.add(mesh.name_full)
+            elif op["op"] == "remesh":
+                mesh = is_mesh(obj)
+                if last.get(mesh.name_full, -1) > index:
+                    raise RequestError("a remesh has to come after its mesh's edits", "op_invalid")
+                known = mesh.name_full not in anew and mesh.name_full not in reshaped
+                scene_objects.check_remesh(op, obj, known)
+                anew.add(mesh.name_full)
+                prepared.append(None)
             elif op["op"] in UVS:
-                if obj.type != "MESH" or obj.data is None:
-                    raise RequestError("not a mesh", "op_invalid")
-                mesh = obj.data
+                mesh = is_mesh(obj)
+                if mesh.name_full in anew:
+                    raise RequestError("the mesh is made anew earlier in the list", "op_invalid")
                 names = layers.setdefault(mesh.name_full, [layer.name for layer in mesh.uv_layers])
                 prepared.append(uvs.check(op, mesh, names))
             elif op["op"] in WEIGHTS:
-                if obj.type != "MESH" or obj.data is None:
-                    raise RequestError("not a mesh", "op_invalid")
+                mesh = is_mesh(obj)
+                if mesh.name_full in anew:
+                    raise RequestError("the mesh is made anew earlier in the list", "op_invalid")
                 names = groups.setdefault(op["object"], [g.name for g in obj.vertex_groups])
                 if op["op"] == "set_weights":
                     prepared.append(_weights(op, obj, names))
@@ -141,8 +193,12 @@ def check(ops: list[dict]) -> tuple[dict, list]:
                     if missing:
                         raise RequestError(f"the object has no vertex group {missing[0]!r}", "op_invalid")
                     prepared.append(None)
+            elif op["op"] == "set_vertices":
+                if obj.type == "MESH" and obj.data and obj.data.name_full in anew:
+                    raise RequestError("the mesh is made anew earlier in the list", "op_invalid")
+                prepared.append(_vertex_positions(op, obj))
             else:
-                prepared.append(_vertex_positions(op, obj) if op["op"] == "set_vertices" else None)
+                prepared.append(None)
         except RequestError as error:
             error.index = index
             raise
@@ -222,7 +278,23 @@ def apply(ops: list[dict]) -> tuple[list[str], list[str], list]:
     for index, (op, ready) in enumerate(zip(ops, prepared)):
         obj = objects[op["object"]]
         report = None
-        if op["op"] == "set_transform":
+        if op["op"] in OBJECTS:
+            try:
+                if op["op"] == "join":
+                    report, made = scene_objects.join(op, obj, ready)
+                elif op["op"] == "separate":
+                    report, made = scene_objects.separate(op, obj, ready)
+                else:
+                    report, made = scene_objects.remesh(op, obj)
+            except RequestError as error:
+                error.index = index
+                raise
+            for name in made:
+                if name not in meshes:
+                    meshes.append(name)
+            created = scene_data.by_id()
+            touched = [obj, *(created[each["id"]] for each in report.get("created", []))]
+        elif op["op"] == "set_transform":
             touched = [obj]
             _set_transform(obj, op)
         elif op["op"] == "add_vertex_group":

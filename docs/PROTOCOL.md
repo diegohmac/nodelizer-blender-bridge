@@ -321,6 +321,62 @@ subdivided edges with what's between them, merged vertices, a dissolve's joined 
 a delete. It's left out past 2,000,000. Merges say how many vertices went and, for the first 1,000,
 which vertex each became.
 
+Three more are changes of topology over a set of edges or vertices:
+
+```json
+{"op": "bridge", "object": "…", "count": 16, "data": "<sha256>", "file": "…"}
+{"op": "fill", "object": "…", "count": 8, "data": "<sha256>", "file": "…"}
+{"op": "make_face", "object": "…", "count": 4, "data": "<sha256>", "file": "…", "component": "vertices"}
+```
+
+- `bridge` is Blender's Bridge Edge Loops with its defaults: faces between two or more loops of
+  edges, each loop joined to the next. Its report adds `loops`, how many runs of edges it was given.
+- `fill` is Blender's Fill with Beauty on: triangles across the holes the edges outline.
+- `make_face` is Blender's New Edge/Face from Vertices, over `vertices` (which bring the edges
+  between them along, as selecting them does) or `edges`: an edge between two vertices, a face from
+  three or more, or from edges that outline one.
+
+New faces take the material and shading of a face beside them, and each reports the faces (or the
+edge) it made in `select`. One that makes nothing, like a bridge of edges that aren't two loops,
+fails with `op_failed`.
+
+Three change which objects the scene has, or make an object's mesh anew:
+
+```json
+{"op": "join", "object": "…", "objects": ["…", "…"]}
+{"op": "separate", "object": "…", "mode": "selection", "seed": "0123456789ab", "component": "faces", "count": 12, "data": "<sha256>", "file": "…"}
+{"op": "separate", "object": "…", "mode": "loose", "seed": "0123456789ab"}
+{"op": "remesh", "object": "…", "voxel_size": 0.02}
+```
+
+- `join` is Blender's Join: the mesh objects in `objects` (1 to 1,000, each once, never `object`
+  itself) become part of `object`, which keeps its name, id, transform and modifiers. No vertices
+  are merged; materials, UV layers and vertex groups are matched by name. The objects joined in
+  leave the scene, and their children are parented to `object`, staying where they are. A mesh
+  `object` shares with other objects is copied first, so they keep theirs. Its report adds
+  `removed`, the ids that left.
+- `separate` is Blender's Separate. With `mode: "selection"` the components in the file, with what
+  they wholly hold (vertices take the edges and faces between them, edges their vertices and the
+  faces they outline, faces their edges and vertices), leave for one new object; edges and vertices
+  still used by what stays are in both. With `mode: "loose"` every piece joined by no edge to the
+  rest becomes an object, in the order of its lowest vertex, except the piece holding the first
+  vertex, which stays. A new object is a copy of the object (transform, collections, materials,
+  vertex groups, modifiers) named by Blender, like `Body.001`. Its id is the first 12 hex digits of
+  SHA-1 of `<seed>:<n>`, n from 0, hashed again while taken, so replaying the edit makes the same
+  ids. The whole mesh (`op_invalid`), a mesh of one piece (`op_invalid`) and more than 1,000 new
+  objects (`op_invalid`) are refused. Its report adds `created`: each new object's `id`, `name` and
+  `counts`.
+- `remesh` is Blender's voxel remesh with voxels of `voxel_size` in the object's own space, keeping
+  volume, without adaptivity or fixed poles. The new mesh has no UV layers, materials, vertex groups
+  or shape keys and is shaded smooth. A mesh with no faces, or one more than 2,000 voxels long, is
+  refused (`op_invalid`, or `op_failed` when a join earlier in the list made it so).
+
+These number their meshes' components anew, like a change of topology: nothing naming components
+may follow one on the same mesh in a list, and a `separate` of a selection is its mesh's last edit
+to name any. `join` and `remesh` name no components, so a `remesh` may follow a `join`. Nothing
+after a `join` may name an object it took in (`op_invalid`). None is made on a mesh with a modifier
+that keeps data per vertex (`op_unsupported`). `changed` lists the object edited and any made.
+
 Three edit vertex groups. Groups belong to the object, by name; their weights belong to the mesh.
 
 ```json
@@ -503,6 +559,10 @@ lets a model import when a texture it names is missing. The protocol didn't chan
 
 Bridge 2.7.0 added `mark_seams`, `unwrap_uvs` and `pack_uvs`, whose reports carry the UVs they made
 in a `set_uvs` file. The host asks for 2.7.0 or later for Model Edit.
+
+Bridge 2.9.0 added `join`, `separate` and `remesh`, and the changes of topology `bridge`, `fill` and
+`make_face`, with `loops`, `removed` and `created` in their reports. The host asks for 2.9.0 or
+later for Model Edit.
 
 Bridge 2.6.0 added UV layer edits (`set_uvs`, `pin_uvs`, `add_uv_layer`, `set_uv_layer`) and, in
 mesh files, each layer's pins (`uvPin<n>`, and `"pins": true` in its `uvLayers` entry) once it has

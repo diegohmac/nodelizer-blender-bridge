@@ -35,7 +35,21 @@ MAX_OBJECT_NAME = 63
 
 STEPS = ("load", "import", "assemble", "assemble_parts", "apply", "save", "snapshot", "export")
 # Edits that change a mesh's vertices, edges and faces, not just where its vertices are.
-TOPOLOGY = ("loop_cut", "subdivide", "knife", "merge", "merge_by_distance", "delete", "dissolve")
+TOPOLOGY = (
+    "loop_cut",
+    "subdivide",
+    "knife",
+    "merge",
+    "merge_by_distance",
+    "delete",
+    "dissolve",
+    "bridge",
+    "make_face",
+    "fill",
+)
+# Edits that change which objects the scene has, or make an object's mesh anew: joining objects into
+# one, separating part of a mesh into objects of its own, and Blender's voxel remesh.
+OBJECTS = ("join", "separate", "remesh")
 # Edits of vertex groups: weights, new groups and locks.
 WEIGHTS = ("set_weights", "add_vertex_group", "lock_vertex_groups")
 # Edits that work a mesh's UV layout out in Blender: unwrapping and packing. Each writes the UVs it
@@ -45,9 +59,23 @@ SOLVES = ("unwrap_uvs", "pack_uvs")
 # Edits of UV layers: corners' UVs and pins, new layers, which layer is active or rendered, seams,
 # and the layouts Blender works out.
 UVS = ("set_uvs", "pin_uvs", "add_uv_layer", "set_uv_layer", "mark_seams", *SOLVES)
-OPS = ("set_transform", "set_vertices", *TOPOLOGY, *WEIGHTS, *UVS)
+OPS = ("set_transform", "set_vertices", *TOPOLOGY, *OBJECTS, *WEIGHTS, *UVS)
 # Edits that name no components, so they may follow a change of topology on the same mesh.
-UNNUMBERED = ("set_transform", "add_vertex_group", "lock_vertex_groups", "add_uv_layer", "set_uv_layer")
+UNNUMBERED = (
+    "set_transform",
+    "add_vertex_group",
+    "lock_vertex_groups",
+    "add_uv_layer",
+    "set_uv_layer",
+    "join",
+    "remesh",
+)
+# The most objects one join takes in, and the most a separation makes.
+MAX_JOINED = 1000
+MAX_SEPARATED = 1000
+SEPARATE_MODES = ("selection", "loose")
+# A remesh's voxels along the mesh's longest side, at most: past this Blender runs out of memory.
+MAX_REMESH_CELLS = 2000
 # The most vertices one edit moves, and the most components one edit names in its file.
 MAX_VERTICES = 16_000_000
 # The most edges a loop cut's ring has, and the most points a knife cut has.
@@ -72,7 +100,13 @@ MAX_MARGIN = 0.5
 MAX_TILE_U = 9
 MAX_TILE_V = 99
 # Which components each edit over a set takes; delete and dissolve take any of them.
-_SET_OF = {"subdivide": ("edges",), "merge": ("vertices",), "merge_by_distance": ("vertices",)}
+_SET_OF = {
+    "subdivide": ("edges",),
+    "merge": ("vertices",),
+    "merge_by_distance": ("vertices",),
+    "bridge": ("edges",),
+    "fill": ("edges",),
+}
 SOURCE_EXTENSIONS = (".glb", ".fbx", ".obj", ".stl", ".usdz")
 OUTPUT_FORMATS = ("glb", "fbx")
 
@@ -384,9 +418,11 @@ def _check_topology(op) -> dict:
         out["faces"] = [_whole(face, 0, MAX_VERTICES, "knife face") for face in faces]
         return out
     needed = {"op", "object", "count", "data", "file"}
-    if kind in ("delete", "dissolve"):
+    if kind in ("delete", "dissolve", "make_face"):
         needed.add("component")
-        if op.get("component") not in COMPONENTS:
+        # A new edge or face is made of vertices or of edges.
+        allowed = COMPONENTS[:2] if kind == "make_face" else COMPONENTS
+        if op.get("component") not in allowed:
             raise RequestError("bad component", "op_invalid")
         out["component"] = op["component"]
     else:
@@ -419,6 +455,48 @@ def _check_topology(op) -> dict:
     return out
 
 
+def _check_objects(op) -> dict:
+    kind = op["op"]
+    out = {"op": kind, "object": _object(op)}
+    if kind == "join":
+        _fields(op, {"op", "object", "objects"})
+        objects = op["objects"]
+        if not isinstance(objects, list) or not 1 <= len(objects) <= MAX_JOINED:
+            raise RequestError("a join names the objects to take in", "op_invalid")
+        for each in objects:
+            if not isinstance(each, str) or not _ID.match(each):
+                raise RequestError("bad object id", "op_invalid")
+        if len(set(objects)) != len(objects) or out["object"] in objects:
+            raise RequestError("a join names each object once", "op_invalid")
+        out["objects"] = list(objects)
+        return out
+    if kind == "remesh":
+        _fields(op, {"op", "object", "voxel_size"})
+        size = op["voxel_size"]
+        if isinstance(size, bool) or not isinstance(size, (int, float)):
+            raise RequestError("voxel_size needs a number", "op_invalid")
+        if not math.isfinite(size) or not 0 < size <= MAX_COORDINATE:
+            raise RequestError("voxel_size is out of range", "op_invalid")
+        out["voxel_size"] = float(size)
+        return out
+    if op.get("mode") not in SEPARATE_MODES:
+        raise RequestError("a separation is of a selection or of loose pieces", "op_invalid")
+    out["mode"] = op["mode"]
+    # The new objects' ids are made from this one, so a replay makes the same.
+    if not isinstance(op.get("seed"), str) or not _OBJECT_ID.match(op["seed"]):
+        raise RequestError("bad seed", "op_invalid")
+    out["seed"] = op["seed"]
+    if out["mode"] == "loose":
+        _fields(op, {"op", "object", "mode", "seed"})
+        return out
+    _fields(op, {"op", "object", "mode", "seed", "component", "count", "data", "file"})
+    if op["component"] not in COMPONENTS:
+        raise RequestError("bad component", "op_invalid")
+    out["component"] = op["component"]
+    out.update(_component_file(op))
+    return out
+
+
 def check_op(op, index: int) -> dict:
     """One edit, with only the fields it may have."""
     if not isinstance(op, dict) or op.get("op") not in OPS:
@@ -426,6 +504,8 @@ def check_op(op, index: int) -> dict:
     try:
         if op["op"] in TOPOLOGY:
             return _check_topology(op)
+        if op["op"] in OBJECTS:
+            return _check_objects(op)
         if op["op"] in WEIGHTS:
             return _check_weights(op)
         if op["op"] in UVS:

@@ -273,6 +273,61 @@ class RequestTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "op_invalid")
             self.assertEqual(caught.exception.index, 0)
 
+    def test_takes_bridges_new_faces_and_fills(self):
+        file = {"count": 2, "data": "b" * 64, "file": os.path.join(EDITS, "ops", "b" * 64 + ".bin")}
+        ops = [
+            {"op": "bridge", "object": "a", **file},
+            {"op": "fill", "object": "a", **file},
+            {"op": "make_face", "object": "a", **file, "component": "vertices"},
+            {"op": "make_face", "object": "a", **file, "component": "edges"},
+        ]
+        checked = wp.check_ops(ops)
+        self.assertEqual([op["component"] for op in checked], ["edges", "edges", "vertices", "edges"])
+        for op in (
+            {**ops[0], "component": "edges"},
+            {**ops[2], "component": "faces"},
+            {k: v for k, v in ops[2].items() if k != "component"},
+            {**ops[1], "count": 0},
+        ):
+            with self.assertRaises(wp.RequestError, msg=json.dumps(op)) as caught:
+                wp.check_ops([op])
+            self.assertEqual(caught.exception.code, "op_invalid")
+
+    def test_takes_joins_separations_and_remeshes(self):
+        file = {"count": 2, "data": "b" * 64, "file": os.path.join(EDITS, "ops", "b" * 64 + ".bin")}
+        seed = "0123456789ab"
+        ops = [
+            {"op": "join", "object": "a", "objects": ["b", "c"]},
+            {"op": "separate", "object": "a", "mode": "loose", "seed": seed},
+            {"op": "separate", "object": "a", "mode": "selection", "seed": seed, "component": "faces", **file},
+            {"op": "remesh", "object": "a", "voxel_size": 1},
+        ]
+        checked = wp.check_ops(ops)
+        self.assertEqual(checked[0]["objects"], ["b", "c"])
+        self.assertEqual(checked[1], {"op": "separate", "object": "a", "mode": "loose", "seed": seed})
+        self.assertEqual(checked[2]["component"], "faces")
+        self.assertEqual(checked[3]["voxel_size"], 1.0)
+        for op in (
+            {**ops[0], "objects": []},
+            {**ops[0], "objects": ["b", "b"]},
+            {**ops[0], "objects": ["a"]},
+            {**ops[0], "objects": ["b", 3]},
+            {**ops[0], "objects": ["b"] * 0 + [str(i) for i in range(wp.MAX_JOINED + 1)]},
+            {**ops[0], "extra": 1},
+            {**ops[1], "mode": "material"},
+            {**ops[1], "seed": "xyz"},
+            {**ops[1], "component": "faces"},
+            {k: v for k, v in ops[2].items() if k != "data"},
+            {**ops[2], "component": "corners"},
+            {**ops[3], "voxel_size": 0},
+            {**ops[3], "voxel_size": "1"},
+            {**ops[3], "voxel_size": float("inf")},
+        ):
+            with self.assertRaises(wp.RequestError, msg=json.dumps(op)) as caught:
+                wp.check_ops([op])
+            self.assertEqual(caught.exception.code, "op_invalid")
+            self.assertEqual(caught.exception.index, 0)
+
     def test_takes_weight_edits(self):
         file = {"count": 4, "data": "c" * 64, "file": os.path.join(EDITS, "ops", "c" * 64 + ".bin")}
         ops = [

@@ -496,7 +496,101 @@ def _dissolve(bm, op, indices):
     return {"component": "faces", "items": list(result.get("region", []))}
 
 
+def _faces_of(geometry) -> list:
+    return [item for item in geometry if isinstance(item, bmesh.types.BMFace)]
+
+
+def _chains(edges) -> int:
+    """How many runs of edges joined end to end there are among `edges`."""
+    chosen = set(edges)
+    seen = set()
+    count = 0
+    for edge in edges:
+        if edge in seen:
+            continue
+        count += 1
+        seen.add(edge)
+        stack = [edge]
+        while stack:
+            for vertex in stack.pop().verts:
+                for other in vertex.link_edges:
+                    if other in chosen and other not in seen:
+                        seen.add(other)
+                        stack.append(other)
+    return count
+
+
+def _bridge(bm, op, indices):
+    """Blender's Bridge Edge Loops with its defaults: faces between two or more loops of edges,
+    each loop joined to the next."""
+    edges = [bm.edges[i] for i in indices.tolist()]
+    loops = _chains(edges)
+    try:
+        result = bmesh.ops.bridge_loops(bm, edges=edges)
+    except Exception as error:  # BMesh says what's wrong with the loops as a RuntimeError.
+        raise RequestError("the edges aren't two or more loops", "op_failed") from error
+    faces = list(result.get("faces", []))
+    if not faces:
+        raise RequestError("the edges aren't two or more loops", "op_failed")
+    return {"component": "faces", "items": faces, "loops": loops}
+
+
+def _make_face(bm, op, indices):
+    """Blender's New Edge/Face from Vertices: an edge between two vertices, a face from three or
+    more, or from edges that outline one. Vertices bring the edges between them along, as selecting
+    them does."""
+    if op["component"] == "edges":
+        edges = [bm.edges[i] for i in indices.tolist()]
+        verts = list(dict.fromkeys(v for e in edges for v in e.verts))
+    else:
+        verts = [bm.verts[i] for i in indices.tolist()]
+        chosen = set(verts)
+        edges = list(
+            dict.fromkeys(
+                e for v in verts for e in v.link_edges if e.other_vert(v) in chosen
+            )
+        )
+    try:
+        result = bmesh.ops.contextual_create(bm, geom=[*verts, *edges], mat_nr=0, use_smooth=False)
+    except Exception as error:
+        raise RequestError("nothing could be made of those", "op_failed") from error
+    faces = list(result.get("faces", []))
+    made = list(result.get("edges", []))
+    if not faces and not made:
+        raise RequestError("nothing could be made of those", "op_failed")
+    for face in faces:
+        # A new face takes the material and shading of a face beside it, as in edit mode.
+        beside = next((f for e in face.edges for f in e.link_faces if f is not face), None)
+        if beside is not None:
+            face.material_index = beside.material_index
+            face.smooth = beside.smooth
+    if faces:
+        return {"component": "faces", "items": faces}
+    return {"component": "edges", "items": made}
+
+
+def _fill(bm, op, indices):
+    """Blender's Fill with Beauty on: triangles across the holes the edges outline."""
+    edges = [bm.edges[i] for i in indices.tolist()]
+    beside = next((f for e in edges for f in e.link_faces), None)
+    try:
+        result = bmesh.ops.triangle_fill(bm, use_beauty=True, use_dissolve=False, edges=edges)
+    except Exception as error:
+        raise RequestError("the edges don't outline a hole", "op_failed") from error
+    faces = _faces_of(result.get("geom", []))
+    if not faces:
+        raise RequestError("the edges don't outline a hole", "op_failed")
+    if beside is not None:
+        for face in faces:
+            face.material_index = beside.material_index
+            face.smooth = beside.smooth
+    return {"component": "faces", "items": faces}
+
+
 _MAKE = {
+    "bridge": _bridge,
+    "make_face": _make_face,
+    "fill": _fill,
     "loop_cut": _loop_cut,
     "subdivide": _subdivide,
     "knife": _knife_cut,
@@ -532,6 +626,8 @@ def apply(mesh, op: dict, prepared) -> dict:
         }
         if len(items) <= MAX_REPORTED:
             report["select"] = {"component": made["component"], "indices": sorted(set(items))}
+        if "loops" in made:
+            report["loops"] = made["loops"]
         if "merged" in made:
             # Each merged vertex, by its old index, and the vertex it's part of now.
             report["merged"] = made["merged"]
