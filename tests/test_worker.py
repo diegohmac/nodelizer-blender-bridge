@@ -360,6 +360,14 @@ class RequestTests(unittest.TestCase):
         with self.assertRaises(wp.RequestError):
             wp.check_ops([{"op": "delete_object", "object": "a", "extra": 1}])
 
+    def test_takes_hiding_and_showing(self):
+        hide = {"op": "set_visible", "object": "a", "visible": False}
+        self.assertEqual(wp.check_ops([hide, {**hide, "visible": True}])[1]["visible"], True)
+        for op in ({**hide, "visible": 0}, {"op": "set_visible", "object": "a"}, {**hide, "extra": 1}):
+            with self.assertRaises(wp.RequestError, msg=json.dumps(op)) as caught:
+                wp.check_ops([op])
+            self.assertEqual(caught.exception.code, "op_invalid")
+
     def test_takes_weight_edits(self):
         file = {"count": 4, "data": "c" * 64, "file": os.path.join(EDITS, "ops", "c" * 64 + ".bin")}
         ops = [

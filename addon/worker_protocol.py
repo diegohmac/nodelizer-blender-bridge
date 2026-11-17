@@ -71,10 +71,11 @@ SOLVES = ("unwrap_uvs", "pack_uvs")
 # Edits of UV layers: corners' UVs and pins, new layers, which layer is active or rendered, seams,
 # and the layouts Blender works out.
 UVS = ("set_uvs", "pin_uvs", "add_uv_layer", "set_uv_layer", "mark_seams", *SOLVES)
-OPS = ("set_transform", "set_vertices", *TOPOLOGY, *OBJECTS, *WEIGHTS, *UVS)
+OPS = ("set_transform", "set_visible", "set_vertices", *TOPOLOGY, *OBJECTS, *WEIGHTS, *UVS)
 # Edits that name no components, so they may follow a change of topology on the same mesh.
 UNNUMBERED = (
     "set_transform",
+    "set_visible",
     "add_vertex_group",
     "lock_vertex_groups",
     "add_uv_layer",
@@ -526,6 +527,13 @@ def check_op(op, index: int) -> dict:
             return _check_weights(op)
         if op["op"] in UVS:
             return _check_uvs(op)
+        if op["op"] == "set_visible":
+            _fields(op, {"op", "object", "visible"})
+            if not isinstance(op.get("object"), str) or not _ID.match(op["object"]):
+                raise RequestError("bad object id", "op_invalid")
+            if not isinstance(op.get("visible"), bool):
+                raise RequestError("visible is true or false", "op_invalid")
+            return {"op": "set_visible", "object": op["object"], "visible": op["visible"]}
         if op["op"] == "set_transform":
             allowed = {"op", "object", "location", "rotation", "scale"}
             if set(op) - allowed:

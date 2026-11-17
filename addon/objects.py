@@ -203,7 +203,7 @@ def join(op: dict, target, sources: list) -> tuple[dict, list]:
         obj.select_set(False)
     chosen = [target, *sources]
     try:
-        with bpy.context.temp_override(
+        with scene_data.shown(chosen), bpy.context.temp_override(
             active_object=target,
             object=target,
             selected_objects=chosen,
@@ -341,7 +341,10 @@ def remesh(op: dict, obj) -> tuple[dict, list]:
     for each in scene_data.scene_objects():
         each.select_set(False)
     try:
-        with bpy.context.temp_override(active_object=obj, object=obj, selected_objects=[obj]):
+        with (
+            scene_data.shown([obj]),
+            bpy.context.temp_override(active_object=obj, object=obj, selected_objects=[obj]),
+        ):
             result = bpy.ops.object.voxel_remesh()
     except Exception as error:
         raise RequestError(str(error), "op_failed") from error

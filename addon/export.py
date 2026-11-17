@@ -131,11 +131,20 @@ def only(objects):
                     needed.append(other)
     scene = list(bpy.context.scene.objects)
     before = {obj: obj.select_get() for obj in scene}
+    # A hidden object can't be selected, and is part of what's exported all the same.
+    hidden = [obj for obj in chosen if obj.hide_get()]
     try:
+        for obj in hidden:
+            obj.hide_set(False)
         for obj in scene:
             obj.select_set(obj in chosen)
         yield True
     finally:
+        for obj in hidden:
+            try:
+                obj.hide_set(True)
+            except (ReferenceError, RuntimeError):
+                pass
         for obj, was in before.items():
             try:
                 obj.select_set(was)

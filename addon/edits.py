@@ -307,6 +307,9 @@ def apply(ops: list[dict]) -> tuple[list[str], list[str], list]:
         elif op["op"] == "set_transform":
             touched = [obj]
             _set_transform(obj, op)
+        elif op["op"] == "set_visible":
+            touched = [obj]
+            scene_data.set_visible(obj, op["visible"])
         elif op["op"] == "add_vertex_group":
             touched = [obj]
             obj.vertex_groups.new(name=op["name"])

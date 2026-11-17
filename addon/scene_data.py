@@ -9,6 +9,8 @@ Coordinates are Blender's own: metres, Z up, -Y forward, matrices column by colu
 
 from __future__ import annotations
 
+import contextlib
+
 import hashlib
 import json
 import os
@@ -379,3 +381,28 @@ class Snapshots:
             json.dumps(snapshot, separators=(",", ":")).encode("utf-8"),
         )
         return {"objects": len(objects), "meshes": sorted(meshes), "appearance": appearance}
+
+
+def set_visible(obj, visible: bool):
+    """Hides an object in the scene, or shows it again, as Blender's eye does. A hidden object is
+    still part of the scene and of what's exported."""
+    if visible:
+        obj.hide_viewport = False
+    obj.hide_set(not visible)
+
+
+@contextlib.contextmanager
+def shown(objects):
+    """Shows hidden objects for as long as Blender's own tools, which leave hidden objects out,
+    work on them, and hides them again after. Objects that are gone by then are skipped."""
+    hidden = [obj for obj in objects if obj.hide_get()]
+    for obj in hidden:
+        obj.hide_set(False)
+    try:
+        yield
+    finally:
+        for obj in hidden:
+            try:
+                obj.hide_set(True)
+            except (ReferenceError, RuntimeError):
+                pass

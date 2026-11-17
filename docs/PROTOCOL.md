@@ -238,6 +238,14 @@ each is optional, but one is needed. The rotation is written in the object's own
 taking the Euler angles nearest the current ones. Numbers must be finite and within 10⁷.
 
 ```json
+{"op": "set_visible", "object": "1b8208f6608e", "visible": false}
+```
+
+Hides an object in the scene, as Blender's eye does, or shows it again. A hidden object is still
+part of the scene: it's edited like any other, and exports take it, whole scene or by `objects`.
+Snapshots say `"visible": false` for it.
+
+```json
 {"op": "set_vertices", "object": "2a520b2b8f0b", "count": 2, "data": "<sha256>", "file": "/…/blender/.edits/<scene>/ops/<sha256>.bin"}
 ```
 
@@ -568,6 +576,8 @@ lets a model import when a texture it names is missing. The protocol didn't chan
 
 Bridge 2.7.0 added `mark_seams`, `unwrap_uvs` and `pack_uvs`, whose reports carry the UVs they made
 in a `set_uvs` file. The host asks for 2.7.0 or later for Model Edit.
+
+Bridge 2.11.0 added the `set_visible` edit. The host asks for 2.11.0 or later for Model Edit.
 
 Bridge 2.10.0 added the `add` step, `objects` on `export` and the `delete_object` edit. The host
 asks for 2.10.0 or later for Model Edit.
