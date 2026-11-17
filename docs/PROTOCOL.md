@@ -197,12 +197,13 @@ limit in number beyond the line's 4 MiB.
 | --- | --- | --- |
 | `load` | `key`, `blend` (a .blend, or null for an empty scene), `replay` (lists of edits) | Opens the .blend and applies each list of edits in turn. |
 | `import` | `key`, `source`: `input.<glb\|fbx\|obj\|stl\|usdz>`, or the OBJ of a bundle unpacked into `input/`, at most three folders further down, in a folder inside a project's `blender` folder | Brings a model into an empty scene, packs its textures and gives every object a new id. Textures may only come from the folder holding `input`; any other file the model names is left out, or, for a texture, taken from a file of the same name in `input/` when there is one. |
+| `add` | `from`, `to`, `source` (placed as for `import`) | Brings a model into the scene held as `from`, beside what's there: its objects come in as `import` brings them, where its file puts them, each with a new id, and nothing already in the scene changes. Names Blender has taken get its usual suffix (`Body.001`). Refused unless `from` is the one held. Answers `{"key", "objects"}`, the ids made. |
 | `assemble` | `key`, `parts` (`{"id","name","source"}`, `source` placed as for `import`), `copies` (`{"id","name","of"}`, optional) | Empties the scene and builds it from parts, for the host's Assemble node: each part's model comes in as `import` brings one in, with its textures kept to its own folder, and its meshes are joined into one mesh object with their transforms applied into the mesh, the origin moved to the middle of its bounds, at the origin with no rotation (quaternion mode) and a scale of 1, named `name` (and its mesh too) with the id `id`. Each copy is a linked duplicate of the part `of` names, sharing its mesh, at rest, with its own name and id. Answers `{"key", "objects"}`, the ids made. |
 | `assemble_parts` | `from`, `to`, `parts`, `copies` (at least one part or copy) | Adds parts and copies to the scene held as `from`, as `assemble` makes them, and leaves every other object as it is. A part whose id the scene has keeps its object and transform, and it and every object sharing its mesh take the new mesh; a copy whose id the scene has takes its source's mesh and keeps its transform. A copy may name any mesh object in the scene. Refused unless `from` is the one held. |
 | `apply` | `from`, `to`, `ops` | Applies edits to the scene held as `from`; refused unless that's the one held. |
 | `save` | `blend` | Saves a copy of the scene there, the file written under another name first, with no `.blend1` backup. |
 | `snapshot` | `folder`, `name` (`r<n>`), `appearance` (`"export"`, a SHA-256 to keep, or null) | Writes `<name>.json`, the mesh files it names that aren't there yet, and with `"export"`, the appearance GLB. |
-| `export` | `path`, `format` (`glb` or `fbx`) | Exports the scene as the bridge's own exports do. An object whose scale turns it inside out (a negative determinant, like a mirrored copy) goes out as real geometry: a copy of its mesh with the mirroring applied and its faces turned to face out again, made for the export only, so the file holds no negative scale and the scene keeps its links. |
+| `export` | `path`, `format` (`glb` or `fbx`), `objects` (optional: 1 to 20,000 ids, each once) | Exports the scene as the bridge's own exports do, or with `objects` only those, with everything under them and the objects their modifiers work with (a mesh's armature, a Shrinkwrap's target), though not what else hangs under those. The selection is as it was afterwards. An object whose scale turns it inside out (a negative determinant, like a mirrored copy) goes out as real geometry: a copy of its mesh with the mirroring applied and its faces turned to face out again, made for the export only, so the file holds no negative scale and the scene keeps its links. |
 
 When a step fails after the scene changed, the worker drops the scene (`key` null), so a half made
 edit is never saved by a later request. Edits refused before anything changed (`not_loaded`,
@@ -370,6 +371,14 @@ Three change which objects the scene has, or make an object's mesh anew:
   volume, without adaptivity or fixed poles. The new mesh has no UV layers, materials, vertex groups
   or shape keys and is shaded smooth. A mesh with no faces, or one more than 2,000 voxels long, is
   refused (`op_invalid`, or `op_failed` when a join earlier in the list made it so).
+
+```json
+{"op": "delete_object", "object": "…"}
+```
+
+`delete_object` takes an object out of the scene, of any type. Its children stay where they are,
+under its own parent, and a mesh no other object uses goes with it. Nothing after it in the list
+may name the object (`op_invalid`). Its report is `removed`, with counts of nothing.
 
 These number their meshes' components anew, like a change of topology: nothing naming components
 may follow one on the same mesh in a list, and a `separate` of a selection is its mesh's last edit
@@ -559,6 +568,9 @@ lets a model import when a texture it names is missing. The protocol didn't chan
 
 Bridge 2.7.0 added `mark_seams`, `unwrap_uvs` and `pack_uvs`, whose reports carry the UVs they made
 in a `set_uvs` file. The host asks for 2.7.0 or later for Model Edit.
+
+Bridge 2.10.0 added the `add` step, `objects` on `export` and the `delete_object` edit. The host
+asks for 2.10.0 or later for Model Edit.
 
 Bridge 2.9.0 added `join`, `separate` and `remesh`, and the changes of topology `bridge`, `fill` and
 `make_face`, with `loops`, `removed` and `created` in their reports. The host asks for 2.9.0 or

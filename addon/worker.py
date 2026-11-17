@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+import uuid
 
 import bpy
 
@@ -28,7 +29,7 @@ from .worker_protocol import (
 )
 
 COMMAND = "nodelizer_worker"
-_MUTATING = ("load", "import", "assemble", "assemble_parts", "apply")
+_MUTATING = ("load", "import", "add", "assemble", "assemble_parts", "apply")
 # Failures that happen before a step changes anything.
 _UNTOUCHED = ("not_loaded", "op_invalid", "op_unsupported")
 
@@ -105,6 +106,36 @@ class Worker:
         self.key = step["key"]
         return {"key": self.key, "objects": len(scene_data.scene_objects())}
 
+    def _add(self, step: dict) -> dict:
+        """Brings a model into the scene held, beside what's there: its objects come in where its
+        file puts them, each with a new id. Nothing already in the scene changes."""
+        if self.key is None or self.key != step["from"]:
+            raise Failure("not_loaded", "another scene is loaded")
+        before = set(scene_data.scene_objects())
+        try:
+            convert._import(step["source"], step["root"])
+            export.pack_files()
+        except Exception as error:  # Importers raise all kinds of errors on broken files.
+            raise Failure("import_failed", str(error)) from error
+        taken = {obj.get(scene_data.ID_PROP) for obj in before}
+        made = []
+        for obj in sorted(scene_data.scene_objects(), key=lambda o: o.name):
+            if obj in before:
+                continue
+            value = uuid.uuid4().hex[:12]
+            while value in taken:
+                value = uuid.uuid4().hex[:12]
+            taken.add(value)
+            obj[scene_data.ID_PROP] = value
+            made.append(value)
+        if not made:
+            raise Failure("import_failed", "the model holds no objects")
+        bpy.context.view_layer.update()
+        # A mesh brought in can take the name of one that went, whose file is remembered.
+        self.snapshots.forget()
+        self.key = step["to"]
+        return {"key": self.key, "objects": made}
+
     def _build(self, step: dict) -> list[str]:
         try:
             return assemble.build(step["parts"], step["copies"])
@@ -161,7 +192,16 @@ class Worker:
     def _export(self, step: dict) -> dict:
         try:
             os.makedirs(os.path.dirname(step["path"]), exist_ok=True)
-            export.export(step["path"], step["format"])
+            objects = None
+            if "objects" in step:
+                known = scene_data.by_id()
+                missing = [each for each in step["objects"] if each not in known]
+                if missing:
+                    raise Failure("export_failed", "the scene doesn't have an object named")
+                objects = [known[each] for each in step["objects"]]
+            export.export(step["path"], step["format"], objects)
+        except Failure:
+            raise
         except Exception as error:
             raise Failure("export_failed", str(error)) from error
         return {"bytes": os.path.getsize(step["path"])}
@@ -172,7 +212,7 @@ class Worker:
         started = time.monotonic()
         for index, step in enumerate(request["steps"]):
             kind = step["type"]
-            if kind in ("import", "load", "assemble", "assemble_parts"):
+            if kind in ("import", "load", "add", "assemble", "assemble_parts"):
                 stage = "load" if kind == "load" else "import"
                 send({"type": "progress", "id": request["id"], "stage": stage})
             try:

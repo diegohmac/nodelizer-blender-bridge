@@ -55,6 +55,42 @@ def check_join(op: dict, objects: dict) -> list:
     return sources
 
 
+def _move_under(child, above):
+    """Gives an object another parent, or none, leaving it exactly where it is. Its own location,
+    rotation and scale stay as they are: what its old parents did to it goes into the parent
+    inverse, which holds any transform, a skew from a parent scaled along one axis included.
+    Without a parent there's nowhere to keep that, so it takes the nearest place it can hold."""
+    world = child.matrix_world.copy()
+    # Everything between the object's own values and the world: its parents and parent inverse.
+    over = world @ child.matrix_basis.inverted_safe()
+    child.parent = above
+    if above is None:
+        child.matrix_parent_inverse = Matrix.Identity(4)
+        child.matrix_world = world
+        return
+    child.parent_type = "OBJECT"
+    child.matrix_parent_inverse = above.matrix_world.inverted_safe() @ over
+
+
+def delete(op: dict, obj) -> tuple[dict, list]:
+    """Takes an object out of the scene. Its children stay where they are, under its own parent.
+    A mesh no other object uses goes with it."""
+    bpy.context.view_layer.update()
+    above = obj.parent
+    for child in list(obj.children):
+        _move_under(child, above)
+    data = obj.data
+    removed = obj.get(scene_data.ID_PROP)
+    bpy.data.objects.remove(obj, do_unlink=True)
+    if data is not None and data.users == 0:
+        try:
+            bpy.data.batch_remove([data])
+        except Exception:  # Data Blender won't remove by hand goes with the next purge.
+            pass
+    nothing = {"vertices": 0, "edges": 0, "faces": 0}
+    return {"object": op["object"], "counts": nothing, "added": nothing, "removed": [removed]}, []
+
+
 def _all(mask: np.ndarray, start: np.ndarray, total: np.ndarray) -> np.ndarray:
     """For each face, whether every one of its corners is in `mask` (one flag per corner)."""
     if not len(start):
@@ -155,20 +191,11 @@ def join(op: dict, target, sources: list) -> tuple[dict, list]:
     while above is not None and above in gone:
         above = above.parent
     if above is not target.parent:
-        world = target.matrix_world.copy()
-        target.parent = above
-        if above is not None:
-            target.parent_type = "OBJECT"
-        target.matrix_parent_inverse = Matrix.Identity(4)
-        target.matrix_world = world
+        _move_under(target, above)
         bpy.context.view_layer.update()
     for child in scene_data.scene_objects():
         if child.parent in gone and child not in gone and child is not target:
-            world = child.matrix_world.copy()
-            child.parent = target
-            child.parent_type = "OBJECT"
-            child.matrix_parent_inverse = Matrix.Identity(4)
-            child.matrix_world = world
+            _move_under(child, target)
     mesh = _own_mesh(target)
     # Sources can share a mesh, which goes once.
     old = list({source.data.name_full: source.data for source in sources}.values())

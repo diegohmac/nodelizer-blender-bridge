@@ -99,13 +99,57 @@ def outward():
         bpy.context.view_layer.update()
 
 
-def export_glb(path: str):
+@contextmanager
+def only(objects):
+    """Selects just these objects for an export of some of the scene, with everything under them
+    and the objects their modifiers work with, like a mesh's armature. Nothing is selected
+    afterwards. With None, nothing changes and the export takes the whole scene."""
+    if objects is None:
+        yield False
+        return
+    chosen = set()
+    # The objects asked for take everything under them along.
+    stack = list(objects)
+    while stack:
+        obj = stack.pop()
+        if obj in chosen:
+            continue
+        chosen.add(obj)
+        stack.extend(obj.children)
+    # What their modifiers work with comes too, whatever the modifier calls it (an armature, a
+    # Shrinkwrap's target), and what those work with in turn, but not what else hangs under them.
+    needed = list(chosen)
+    while needed:
+        obj = needed.pop()
+        for modifier in obj.modifiers:
+            for prop in modifier.bl_rna.properties:
+                if prop.type != "POINTER":
+                    continue
+                other = getattr(modifier, prop.identifier, None)
+                if isinstance(other, bpy.types.Object) and other not in chosen:
+                    chosen.add(other)
+                    needed.append(other)
+    scene = list(bpy.context.scene.objects)
+    before = {obj: obj.select_get() for obj in scene}
+    try:
+        for obj in scene:
+            obj.select_set(obj in chosen)
+        yield True
+    finally:
+        for obj, was in before.items():
+            try:
+                obj.select_set(was)
+            except ReferenceError:
+                pass
+
+
+def export_glb(path: str, objects=None):
     temporary = path[: -len(".glb")] + ".partial.glb"
-    with object_mode(), outward():
+    with object_mode(), outward(), only(objects) as some:
         bpy.ops.export_scene.gltf(
             filepath=temporary,
             export_format="GLB",
-            use_selection=False,
+            use_selection=some,
             export_apply=True,
             export_yup=True,
             export_animations=True,
@@ -115,12 +159,12 @@ def export_glb(path: str):
     _replace(temporary, path)
 
 
-def export_fbx(path: str):
+def export_fbx(path: str, objects=None):
     temporary = path[: -len(".fbx")] + ".partial.fbx"
-    with object_mode(), outward():
+    with object_mode(), outward(), only(objects) as some:
         bpy.ops.export_scene.fbx(
             filepath=temporary,
-            use_selection=False,
+            use_selection=some,
             object_types={"ARMATURE", "EMPTY", "MESH", "OTHER"},
             use_mesh_modifiers=True,
             add_leaf_bones=False,
@@ -133,11 +177,12 @@ def export_fbx(path: str):
     _replace(temporary, path)
 
 
-def export(path: str, fmt: str):
+def export(path: str, fmt: str, objects=None):
+    """Exports the scene, or with `objects` only those and what they need."""
     if fmt == "glb":
-        export_glb(path)
+        export_glb(path, objects)
     elif fmt == "fbx":
-        export_fbx(path)
+        export_fbx(path, objects)
     else:
         raise ValueError("unknown format")
 

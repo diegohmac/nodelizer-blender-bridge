@@ -328,6 +328,38 @@ class RequestTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "op_invalid")
             self.assertEqual(caught.exception.index, 0)
 
+    def test_takes_a_model_into_a_scene_an_export_of_some_objects_and_a_deletion(self):
+        source = os.path.join(EDITS, "source", "input.glb")
+        request = wp.decode(
+            run(
+                {"type": "add", "from": "n:1", "to": "n:2", "source": source},
+                {
+                    "type": "export",
+                    "path": os.path.join(ROOT, "part.glb"),
+                    "format": "glb",
+                    "objects": ["a1b2c3d4e5f6"],
+                },
+                {"type": "apply", "from": "n:2", "to": "n:3", "ops": [{"op": "delete_object", "object": "a"}]},
+            )
+        )
+        add, export, apply = request["steps"]
+        self.assertEqual(add["root"], os.path.join(EDITS, "source"))
+        self.assertEqual(export["objects"], ["a1b2c3d4e5f6"])
+        self.assertEqual(apply["ops"], [{"op": "delete_object", "object": "a"}])
+        whole = wp.decode(run({"type": "export", "path": os.path.join(ROOT, "all.glb"), "format": "glb"}))
+        self.assertNotIn("objects", whole["steps"][0])
+        for step in (
+            {"type": "add", "from": "n:1", "to": "n:2", "source": "/tmp/elsewhere/input.glb"},
+            {"type": "add", "to": "n:2", "source": source},
+            {"type": "export", "path": os.path.join(ROOT, "p.glb"), "format": "glb", "objects": []},
+            {"type": "export", "path": os.path.join(ROOT, "p.glb"), "format": "glb", "objects": ["a", "a"]},
+            {"type": "export", "path": os.path.join(ROOT, "p.glb"), "format": "glb", "objects": "a"},
+        ):
+            with self.assertRaises(wp.RequestError, msg=json.dumps(step)):
+                wp.decode(run(step))
+        with self.assertRaises(wp.RequestError):
+            wp.check_ops([{"op": "delete_object", "object": "a", "extra": 1}])
+
     def test_takes_weight_edits(self):
         file = {"count": 4, "data": "c" * 64, "file": os.path.join(EDITS, "ops", "c" * 64 + ".bin")}
         ops = [

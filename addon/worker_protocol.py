@@ -33,7 +33,19 @@ _OBJECT_ID = re.compile(r"^[a-f0-9]{12}$")
 # Blender keeps an object's name to 63 bytes.
 MAX_OBJECT_NAME = 63
 
-STEPS = ("load", "import", "assemble", "assemble_parts", "apply", "save", "snapshot", "export")
+STEPS = (
+    "load",
+    "import",
+    "add",
+    "assemble",
+    "assemble_parts",
+    "apply",
+    "save",
+    "snapshot",
+    "export",
+)
+# The most objects an export names when it takes only some of the scene.
+MAX_EXPORTED = 20_000
 # Edits that change a mesh's vertices, edges and faces, not just where its vertices are.
 TOPOLOGY = (
     "loop_cut",
@@ -49,7 +61,7 @@ TOPOLOGY = (
 )
 # Edits that change which objects the scene has, or make an object's mesh anew: joining objects into
 # one, separating part of a mesh into objects of its own, and Blender's voxel remesh.
-OBJECTS = ("join", "separate", "remesh")
+OBJECTS = ("join", "separate", "remesh", "delete_object")
 # Edits of vertex groups: weights, new groups and locks.
 WEIGHTS = ("set_weights", "add_vertex_group", "lock_vertex_groups")
 # Edits that work a mesh's UV layout out in Blender: unwrapping and packing. Each writes the UVs it
@@ -69,6 +81,7 @@ UNNUMBERED = (
     "set_uv_layer",
     "join",
     "remesh",
+    "delete_object",
 )
 # The most objects one join takes in, and the most a separation makes.
 MAX_JOINED = 1000
@@ -470,6 +483,9 @@ def _check_objects(op) -> dict:
             raise RequestError("a join names each object once", "op_invalid")
         out["objects"] = list(objects)
         return out
+    if kind == "delete_object":
+        _fields(op, {"op", "object"})
+        return out
     if kind == "remesh":
         _fields(op, {"op", "object", "voxel_size"})
         size = op["voxel_size"]
@@ -653,6 +669,15 @@ def check_step(step) -> dict:
             "source": source,
             "root": root,
         }
+    if kind == "add":
+        source, root = _source(step.get("source"))
+        return {
+            "type": "add",
+            "from": _key(step.get("from"), "from"),
+            "to": _key(step.get("to"), "to"),
+            "source": source,
+            "root": root,
+        }
     if kind == "assemble":
         parts, copies = _parts(step, 0)
         named = {part["id"] for part in parts}
@@ -700,11 +725,22 @@ def check_step(step) -> dict:
     fmt = step.get("format")
     if fmt not in OUTPUT_FORMATS:
         raise RequestError("unknown format")
-    return {
+    out = {
         "type": "export",
         "path": _path(step.get("path"), (f".{fmt}",), "path"),
         "format": fmt,
     }
+    if "objects" in step:
+        objects = step["objects"]
+        if not isinstance(objects, list) or not 1 <= len(objects) <= MAX_EXPORTED:
+            raise RequestError("an export of some objects names them")
+        for each in objects:
+            if not isinstance(each, str) or not _ID.match(each):
+                raise RequestError("bad object id")
+        if len(set(objects)) != len(objects):
+            raise RequestError("an export names each object once")
+        out["objects"] = list(objects)
+    return out
 
 
 def decode(line: bytes) -> dict:

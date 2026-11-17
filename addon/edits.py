@@ -156,6 +156,9 @@ def check(ops: list[dict]) -> tuple[dict, list]:
                     anew.add(each.data.name_full)
                 gone.update(op["objects"])
                 prepared.append(sources)
+            elif op["op"] == "delete_object":
+                gone.add(op["object"])
+                prepared.append(None)
             elif op["op"] == "separate":
                 mesh = is_mesh(obj)
                 if last.get(mesh.name_full, -1) > index:
@@ -280,7 +283,11 @@ def apply(ops: list[dict]) -> tuple[list[str], list[str], list]:
         report = None
         if op["op"] in OBJECTS:
             try:
-                if op["op"] == "join":
+                if op["op"] == "delete_object":
+                    report, made = scene_objects.delete(op, obj)
+                    objects.pop(op["object"], None)
+                    obj = None
+                elif op["op"] == "join":
                     report, made = scene_objects.join(op, obj, ready)
                 elif op["op"] == "separate":
                     report, made = scene_objects.separate(op, obj, ready)
@@ -293,7 +300,10 @@ def apply(ops: list[dict]) -> tuple[list[str], list[str], list]:
                 if name not in meshes:
                     meshes.append(name)
             created = scene_data.by_id()
-            touched = [obj, *(created[each["id"]] for each in report.get("created", []))]
+            touched = [
+                *([] if obj is None else [obj]),
+                *(created[each["id"]] for each in report.get("created", [])),
+            ]
         elif op["op"] == "set_transform":
             touched = [obj]
             _set_transform(obj, op)
